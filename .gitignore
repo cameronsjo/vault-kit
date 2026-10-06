@@ -1,3 +1,7 @@
 __pycache__/
 .obsidian/workspace*.json
 .DS_Store
+.worktrees/
+.qmd/
+.venv/
+.ingest-state/

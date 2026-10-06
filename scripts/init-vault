@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Initialize this vault from the vault-kit template, or re-render its skills.
+
+    scripts/init-vault --name <slug> --title "<Title>" --scope "<scope>"
+    scripts/init-vault --render-skills
+
+Init does four things, in this order, and writes vault.toml last:
+
+  1. renders templates/skills/ into skills/<name>-discover/ and skills/<name>-maintain/
+  2. appends "## [<today>] maintenance | Initialize <name> from vault-kit" to wiki/log.md
+  3. regenerates every index.md
+  4. writes vault.toml: template = false, name, title, scope, root_env (<NAME>_ROOT);
+     the [redaction] table and every comment are kept
+
+A vault counts as initialized only once vault.toml says so, so an interrupted run
+leaves the template flag set. Re-running the same command prints the pieces still
+missing and finishes them.
+
+--name   slug matching ^[a-z][a-z0-9]*(-[a-z0-9]+)*$, at most 31 characters; it names
+         the skills and the search collection
+--title  display title, one plain line
+--scope  one clause naming what the vault covers
+
+--render-skills re-renders skills/ from templates/ using vault.toml, writing only the
+files that changed and removing files no template produces. Run it after editing a
+template or pulling an engine update.
+
+Exit codes: 0 done; 1 a step failed; 2 usage error or invalid value; 3 already
+initialized.
+
+Test only: VAULT_KIT_INIT_FAIL_AFTER=render|log|indexes makes init exit 1 right
+after that step, so scripts/test-init.sh can prove an interrupted run resumes.
+"""
+import vaultconf  # toolchain preflight; must precede everything else
+import argparse
+from datetime import date
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import tomllib
+
+ROOT = vaultconf.ROOT
+LOG = ROOT / "wiki" / "log.md"
+TOML = ROOT / "vault.toml"
+FAIL_AFTER = os.environ.get("VAULT_KIT_INIT_FAIL_AFTER", "")
+
+
+class UsageError(Exception):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(message)
+
+
+def usage(message):
+    print(f"init-vault: {message}", file=sys.stderr)
+    print("usage: scripts/init-vault --name <slug> --title \"<Title>\" --scope \"<scope>\"\n"
+          "       scripts/init-vault --render-skills", file=sys.stderr)
+    return 2
+
+
+def log_heading(name):
+    return f"maintenance | Initialize {name} from vault-kit"
+
+
+def initialized_names():
+    """Names already recorded by an Initialize log entry (complete or partial runs)."""
+    text = LOG.read_text(encoding="utf-8") if LOG.exists() else ""
+    return re.findall(r"^## \[\d{4}-\d{2}-\d{2}\] maintenance \| Initialize (\S+) from vault-kit$",
+                      text, re.M)
+
+
+def write_skills(config):
+    """Write rendered skills that differ, remove files no template produces; return changes."""
+    rendered = vaultconf.render_skills(ROOT, config)
+    skill_dirs = sorted({rel.parts[1] for rel in rendered})
+    # Refuse before writing anything: a symlinked skills/, skill dir, or file would send a
+    # write, or the removal sweep below, outside the vault.
+    for rel in rendered:
+        vaultconf.refuse_symlink(ROOT, ROOT / rel)
+    changed = []
+    for rel, text in rendered.items():
+        path = ROOT / rel
+        if path.is_file() and path.read_text(encoding="utf-8") == text:
+            continue
+        vaultconf.safe_write(ROOT, path, text)
+        changed.append(f"wrote {rel}")
+    for skill_dir in skill_dirs:
+        for live in sorted((ROOT / "skills" / skill_dir).rglob("*"), reverse=True):
+            rel = live.relative_to(ROOT)
+            if (live.is_file() or live.is_symlink()) and rel not in rendered:
+                live.unlink()
+                changed.append(f"removed {rel}")
+            elif live.is_dir() and not any(live.iterdir()):
+                live.rmdir()
+    return changed
+
+
+def indexes_fresh(title):
+    return subprocess.run([sys.executable, "scripts/index-vault.py", "--check", "--title", title],
+                          cwd=ROOT, capture_output=True, text=True).returncode == 0
+
+
+def state(config):
+    """Which init pieces are complete, decided from the files themselves."""
+    try:
+        skills = not vaultconf.rendered_skill_errors(ROOT, config)
+    except SystemExit:
+        skills = False
+    return {
+        "skills rendered": skills,
+        "log entry": config["name"] in initialized_names(),
+        "indexes regenerated": indexes_fresh(config["title"]),
+        "vault.toml written": False,  # init only runs while vault.toml still says template
+    }
+
+
+def checkpoint(step):
+    if FAIL_AFTER == step:
+        print(f"init-vault: stopping after {step} (VAULT_KIT_INIT_FAIL_AFTER, test only)", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def append_log(name):
+    vaultconf.refuse_symlink(ROOT, LOG)
+    text = LOG.read_text(encoding="utf-8")
+    entry = (f"\n## [{date.today().isoformat()}] {log_heading(name)}\n\n"
+             f"Actor: scripts/init-vault. Rendered `skills/{name}-discover/` and `skills/{name}-maintain/` "
+             "from `templates/skills/`, regenerated the indexes, and set the vault's identity in "
+             "`vault.toml`. Evidence: init-vault exit 0. Gaps: `[redaction] deny` in `vault.toml` and "
+             "the owners in `.github/CODEOWNERS` are still placeholders.\n")
+    vaultconf.safe_write(ROOT, LOG, text + ("" if text.endswith("\n") else "\n") + entry)
+
+
+def set_key(text, key, value):
+    """Replace a top-level `key = ...` line, keeping its trailing comment, or insert one."""
+    literal = "true" if value is True else "false" if value is False else json.dumps(value)
+    head, sep, tail = text.partition("\n[")
+    pattern = re.compile(rf'^{key}\s*=\s*(?:"(?:[^"\\]|\\.)*"|true|false)(\s*#.*)?$', re.M)
+    if pattern.search(head):
+        head = pattern.sub(lambda m: f"{key} = {literal}{m.group(1) or ''}", head, count=1)
+    else:
+        head = head.rstrip("\n") + f"\n{key} = {literal}\n"
+    return head + sep + tail
+
+
+def write_toml(config):
+    original = TOML.read_text(encoding="utf-8")
+    text = original
+    for key, value in (("template", False), ("name", config["name"]), ("title", config["title"]),
+                       ("scope", config["scope"]), ("root_env", config["root_env"])):
+        text = set_key(text, key, value)
+    parsed = tomllib.loads(text)
+    expected_deny = tomllib.loads(original).get("redaction", {}).get("deny", [])
+    if (parsed.get("template") is not False or parsed.get("name") != config["name"]
+            or parsed.get("redaction", {}).get("deny", []) != expected_deny):
+        raise SystemExit("init-vault: refusing to write vault.toml; the rewrite did not round-trip")
+    fd, tmp = tempfile.mkstemp(dir=ROOT, prefix=".vault.toml.", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.chmod(tmp, os.stat(TOML).st_mode & 0o777)
+    os.replace(tmp, TOML)
+
+
+def init(args):
+    current = vaultconf.load(ROOT)
+    if not current["template"] and current["name"]:
+        print(f"init-vault: {ROOT} is already initialized as {current['name']!r} (vault.toml "
+              "template = false); use --render-skills to re-render skills", file=sys.stderr)
+        return 3
+    config = {"name": args.name, "title": args.title, "scope": args.scope,
+              "root_env": vaultconf.derive_root_env(args.name)}
+    errors = vaultconf.identity_errors(config)
+    if errors:
+        for error in errors:
+            print(f"init-vault: {error}", file=sys.stderr)
+        return 2
+    others = sorted(set(initialized_names()) - {args.name})
+    if others:
+        print(f"init-vault: wiki/log.md already records an Initialize entry for {', '.join(others)}; "
+              f"re-run with --name {others[0]} to finish that run", file=sys.stderr)
+        return 2
+
+    vaultconf.refuse_symlink(ROOT, LOG)  # before any step writes, so a refusal leaves no partial init
+    done = state(config)
+    missing = [piece for piece, complete in done.items() if not complete]
+    if len(missing) < len(done):
+        print(f"resuming a partial init of {args.name}; missing: {', '.join(missing)}")
+
+    for line in write_skills(config):
+        print(line)
+    checkpoint("render")
+    if not done["log entry"]:
+        append_log(args.name)
+        print(f"appended wiki/log.md: {log_heading(args.name)}")
+    checkpoint("log")
+    result = subprocess.run([sys.executable, "scripts/index-vault.py", "--title", args.title], cwd=ROOT)
+    if result.returncode:
+        print("init-vault: index regeneration failed; fix the error above and re-run", file=sys.stderr)
+        return 1
+    checkpoint("indexes")
+    write_toml(config)  # last: its template flag is what marks the vault initialized
+    print("wrote vault.toml: template = false")
+    print(f"Next: add patterns for your internal hosts and codenames to [redaction] deny in {TOML}")
+    print(f"Next: replace the placeholder owner in {ROOT / '.github' / 'CODEOWNERS'}")
+    print(f"Next: export {config['root_env']}={ROOT} in your shell profile so the skills can find the vault")
+    print(f"PASS: initialized {args.name} at {ROOT}")
+    return 0
+
+
+def render_only():
+    config = vaultconf.load(ROOT)
+    if config["template"] or not config["name"]:
+        print(f"init-vault: vault.toml is not initialized; {vaultconf.INIT_HINT}", file=sys.stderr)
+        return 2
+    errors = vaultconf.identity_errors(config)
+    if errors:
+        for error in errors:
+            print(f"init-vault: vault.toml {error}", file=sys.stderr)
+        return 2
+    changed = write_skills(config)
+    for line in changed:
+        print(line)
+    print(f"PASS: skills/ matches templates/ ({len(changed)} change(s))")
+    return 0
+
+
+def main(argv):
+    sys.stdout.reconfigure(line_buffering=True)  # keep order with index-vault.py's output
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    parser = Parser(prog="init-vault", add_help=False)
+    parser.add_argument("--name")
+    parser.add_argument("--title")
+    parser.add_argument("--scope")
+    parser.add_argument("--render-skills", action="store_true")
+    try:
+        args = parser.parse_args(argv)
+    except UsageError as error:
+        return usage(str(error))
+    identity = [args.name, args.title, args.scope]
+    if args.render_skills:
+        if any(value is not None for value in identity):
+            return usage("--render-skills takes no other flags")
+        return render_only()
+    if any(value is None for value in identity):
+        return usage("--name, --title, and --scope are all required")
+    return init(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,33 @@
+# Replace @your-org/vault-owners with the people or team who own this vault, then
+# turn on "Require review from Code Owners" in the branch protection for main.
+#
+# An allowlist: every path needs an owner's review unless a later line frees it, because
+# almost any new top-level path can be instructions or code for an agent or a tool
+# (.claude/, .mcp.json, .obsidian/plugins/, .gitattributes, .venv, a new script). The last
+# matching line wins, and a line with no owner frees its paths.
+*                   @your-org/vault-owners
+# Content a contributor edits in an ordinary change: pages, captures, and the generated
+# root index. docs/plans/ stays owned: agents carry out plan files, so a plan is
+# instructions.
+/wiki/
+/raw/
+/index.md
+# The vault's own rules and page templates are instructions every agent follows.
+/wiki/system/       @your-org/vault-owners
+/wiki/templates/    @your-org/vault-owners
+# A dot-path inside the content directories (an editor or agent config) is not content.
+/wiki/**/.*         @your-org/vault-owners
+/raw/**/.*          @your-org/vault-owners
+# Agent harnesses load these as instructions from any directory. make check refuses them
+# outside the root and skills/ in any letter case; these lines keep the usual spellings
+# owned even so.
+**/AGENTS.md            @your-org/vault-owners
+**/agents.md            @your-org/vault-owners
+**/AGENTS.override.md   @your-org/vault-owners
+**/agents.override.md   @your-org/vault-owners
+**/CLAUDE.md            @your-org/vault-owners
+**/claude.md            @your-org/vault-owners
+**/CLAUDE.local.md      @your-org/vault-owners
+**/claude.local.md      @your-org/vault-owners
+**/GEMINI.md            @your-org/vault-owners
+**/gemini.md            @your-org/vault-owners

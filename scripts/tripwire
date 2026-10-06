@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Private-name tripwire for the vault-kit template repository.
+
+Reads newline-separated Python regexes from --patterns <file> or, without it, from the
+VAULT_KIT_TRIPWIRE environment variable (CI passes an Actions secret). Blank lines are
+skipped; patterns are numbered from 1 in the order given. Each pattern is used as given,
+case-insensitively: the list's author adds any word boundaries.
+
+It scans:
+  - the working tree: every file `git ls-files` lists (tracked, plus untracked files
+    .gitignore does not exclude) and every one of those path names. Text is decoded the way
+    patternscan.decode does it (a UTF-16 or UTF-32 byte-order mark decodes as that
+    encoding; a NUL in the first 8 KiB otherwise means binary), never by .gitattributes,
+    which a commit could use to mark a file binary. A symlink is not followed; its target
+    text is scanned instead.
+  - history: the messages and patches (`git log -p --text`) of BASE..HEAD, or of all
+    history reachable from HEAD when --base is not given; --no-history skips this. A
+    patch line of a UTF-16 or UTF-32 file cannot match (a NUL sits between its ASCII
+    characters), so each such file a commit adds or changes is decoded and scanned whole
+
+It never prints a pattern or the text a pattern matched. A content hit prints
+`<path>:<line>: tripwire pattern N`; a path-name hit withholds the path, since the path is
+the match; a history hit prints `<commit>: tripwire pattern N in the message|patch` or
+`<commit>: tripwire pattern N in a UTF-16 or UTF-32 file`.
+
+Exit 0: no hit. Exit 1: at least one hit. Exit 2: no patterns, a pattern that is not a
+valid regex (named by number only), a bad --base, or a file that cannot be read.
+"""
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+import patternscan  # standard library only; no toolchain preflight
+
+ROOT = Path(__file__).resolve().parent.parent
+ENV = "VAULT_KIT_TRIPWIRE"
+COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+USAGE = "usage: tripwire [--patterns <file>] [--base <full-commit-id>] [--no-history]"
+
+
+def fail(message, code=2):
+    sys.stderr.write(f"tripwire: {message}\n")
+    raise SystemExit(code)
+
+
+def parse_args(argv):
+    opts = {"patterns": None, "base": "", "history": True}
+    args = list(argv)
+    while args:
+        flag = args.pop(0)
+        if flag in ("--patterns", "--base") and args:
+            opts[flag[2:]] = args.pop(0)
+        elif flag == "--no-history":
+            opts["history"] = False
+        else:
+            fail(USAGE)
+    return opts
+
+
+def load_patterns(path):
+    if path:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as error:
+            fail(f"cannot read the patterns file ({error.strerror})")
+    else:
+        text = os.environ.get(ENV, "")
+    lines = [line.rstrip("\r") for line in text.split("\n")]
+    patterns = [line for line in lines if line.strip()]
+    if not patterns:
+        fail(f"no patterns (pass --patterns <file> or set {ENV}); nothing was scanned")
+    compiled = []
+    for number, pattern in enumerate(patterns, 1):
+        try:
+            compiled.append(re.compile(pattern, re.IGNORECASE))
+        except re.error:
+            # The error text can quote the pattern, so only its number is shown.
+            fail(f"pattern {number} is not a valid regex; nothing was scanned")
+    return compiled
+
+
+def git(*args, check=True):
+    result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
+    if check and result.returncode:
+        fail(f"git {args[0]} exited {result.returncode}; nothing was scanned")
+    return result
+
+
+def hits(patterns, text):
+    return [number for number, pattern in enumerate(patterns, 1) if pattern.search(text)]
+
+
+def scan_tree(patterns):
+    found = []
+    names = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout.decode(
+        "utf-8", "surrogateescape").split("\0")
+    for number in sorted({n for name in names if name for n in hits(patterns, name)}):
+        found.append(f"a path name in the tree (withheld): tripwire pattern {number}")
+    for name in names:
+        path = ROOT / name
+        if not name or not (path.is_symlink() or path.is_file()):
+            continue
+        shown = name if not hits(patterns, name) else "(withheld path)"
+        try:
+            # A symlink's target text, not the file it points at (which may be outside the tree).
+            text = os.readlink(path) if path.is_symlink() else patternscan.decode(path.read_bytes())
+        except OSError as error:
+            fail(f"{shown}: unreadable ({error.strerror}); the tree scan is incomplete")
+        if text is None:
+            continue  # binary
+        for line_number, line in enumerate(text.splitlines(), 1):
+            for number in hits(patterns, line):
+                found.append(f"{shown}:{line_number}: tripwire pattern {number}")
+    return found
+
+
+def scan_history(patterns, base):
+    found = []
+    rev = [f"{base}..HEAD"] if base else ["HEAD"]
+    if not git("rev-parse", "--verify", "--quiet", "HEAD", check=False).stdout:
+        return found  # no commits yet
+    # A NUL opens each commit's record: its id, then the message, then the patch. --cc
+    # adds a merge's own conflict resolutions; its parents' patches are scanned on their own.
+    # --text: a committed .gitattributes cannot turn a patch into "Binary files differ".
+    out = git("log", "--no-color", "--no-ext-diff", "--no-textconv", "-p", "--text", "--cc",
+              "--format=%x00%H%n%B%x00", *rev).stdout.decode("utf-8", "replace")
+    records = out.split("\0")
+    # records: ['', '<sha>\n<message>', '<patch>', '<sha>\n<message>', '<patch>', ...]
+    for i in range(1, len(records), 2):
+        sha, _, message = records[i].partition("\n")
+        patch = records[i + 1] if i + 1 < len(records) else ""
+        for number in hits(patterns, message):
+            found.append(f"{sha}: tripwire pattern {number} in the message")
+        for number in sorted({n for line in patch.splitlines() for n in hits(patterns, line)}):
+            found.append(f"{sha}: tripwire pattern {number} in the patch")
+    # A UTF-16 or UTF-32 patch line holds a NUL between every ASCII character, so it cannot
+    # match above; each such file a commit adds or changes is decoded whole instead.
+    commits = git("rev-list", *rev).stdout.decode().split()
+    try:
+        for sha in commits:
+            numbers = set()
+            for _, _, text in patternscan.wide_texts(ROOT, patternscan.parent_args(ROOT, sha)):
+                numbers.update(n for line in text.splitlines() for n in hits(patterns, line))
+            for number in sorted(numbers):
+                found.append(f"{sha}: tripwire pattern {number} in a UTF-16 or UTF-32 file")
+    except (subprocess.CalledProcessError, RuntimeError):
+        fail("git could not read a commit's files; the history scan is incomplete")
+    return found
+
+
+def main(argv):
+    opts = parse_args(argv)
+    base = opts["base"]
+    if base and not COMMIT_RE.fullmatch(base):
+        fail("--base must be a full lowercase commit id; nothing was scanned")
+    if base and git("cat-file", "-e", f"{base}^{{commit}}", check=False).returncode:
+        fail(f"--base {base} is not a commit in this repository; nothing was scanned")
+    patterns = load_patterns(opts["patterns"])
+    found = scan_tree(patterns)
+    if opts["history"]:
+        found += scan_history(patterns, base)
+    for line in found:
+        print(line)
+    scope = "the tree" + ("" if not opts["history"] else f" and history {base[:12] + '..HEAD' if base else 'from HEAD'}")
+    if found:
+        print(f"FAIL: tripwire: {len(found)} hit(s) in {scope}; patterns are not shown")
+        return 1
+    print(f"PASS: tripwire: {len(patterns)} pattern(s), no hit in {scope}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

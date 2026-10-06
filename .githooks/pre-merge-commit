@@ -1,0 +1,25 @@
+#!/bin/sh
+# A merge Git completes without a conflict skips pre-commit and runs this hook
+# instead, so it runs the same checks. MERGE_HEAD does not exist yet here, so the
+# history check applies its ordinary rule.
+set -eu
+vault_root=$(git rev-parse --show-toplevel)
+cd "$vault_root"
+# The global or system hooks install-hooks chained (vaultkit.chainHooksPath, often a secret
+# scan of their own) run first; a failure stops the merge. install-hooks --no-chain unsets it.
+# VAULTKIT_CHAINED marks the chained hook's run: if the chain leads back here, this hook
+# skips the chain instead of calling itself without end.
+chain=$(git config --local --get vaultkit.chainHooksPath || true)
+hook=$(basename "$0")
+if [ -n "$chain" ] && [ -x "$chain/$hook" ]; then
+	if [ -n "${VAULTKIT_CHAINED:-}" ]; then
+		echo "vault-kit: VAULTKIT_CHAINED is set; skipping the chained $hook in $chain" >&2
+	else
+		VAULTKIT_CHAINED=1 "$chain/$hook" "$@" || { echo "vault-kit: the chained $hook hook in $chain failed; nothing was committed" >&2; exit 1; }
+	fi
+fi
+# The repository virtualenv from `make setup` when scripts/venv-python finds a safe one
+# (untracked, not a symlink, or the primary checkout's from a worktree), else python3 on PATH.
+py=$(sh scripts/venv-python 2>/dev/null || true)
+[ -n "$py" ] || py=python3
+exec "$py" scripts/check-staged.py

@@ -1,0 +1,61 @@
+#!/bin/sh
+# Print the absolute path of the repository virtualenv's python3 (from make setup) when it is
+# safe to run; print nothing otherwise, and the caller uses python3 from PATH.
+#
+# Safe means: no path under .venv, in any letter case, is tracked in this checkout (a
+# committed .venv would let a pull replace the interpreter, and with it every check; on a
+# case-insensitive file system a tracked .VENV/bin/python3 is .venv/bin/python3), .venv is a
+# real directory rather than a symlink, and .venv/bin/python3 is executable. A Git worktree
+# without its own .venv uses the primary checkout's, under the same rules.
+# The Makefile, both hooks and scripts/vaultconf.py all ask this script, so the rule is
+# written once.
+set -u
+
+# Run git without the pathspec variables, which would change what ':(icase).venv' matches.
+pathspec_git() {
+	(
+		unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+		git "$@"
+	)
+}
+
+# Run git on a checkout's own repository and index. Inside a hook Git exports GIT_DIR and
+# GIT_INDEX_FILE for the worktree that is committing; inherited, they make
+# `git -C <primary>` read that worktree's index instead of the primary's.
+clean_git() {
+	(
+		unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+			GIT_ALTERNATE_OBJECT_DIRECTORIES
+		pathspec_git "$@"
+	)
+}
+
+# Fail closed: when Git cannot list the index, the venv is not used.
+untracked() {
+	tracked=$(clean_git -C "$1" ls-files -- ':(icase).venv' 2>/dev/null) || return 1
+	[ -z "$tracked" ]
+}
+
+usable() {
+	[ -d "$1/.venv" ] && [ ! -L "$1/.venv" ] && [ -x "$1/.venv/bin/python3" ] && untracked "$1"
+}
+
+top=$(clean_git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# A checkout that tracks anything under .venv uses no venv at all, not even the primary's.
+# Two indexes count: the checkout's own, and the one Git hands a hook in GIT_INDEX_FILE
+# (`git commit <path>` builds a temporary index, which is what the commit records).
+untracked "$top" || exit 0
+if [ -n "${GIT_INDEX_FILE:-}" ]; then
+	tracked=$(pathspec_git -C "$top" ls-files -- ':(icase).venv' 2>/dev/null) || exit 0
+	[ -z "$tracked" ] || exit 0
+fi
+if usable "$top"; then
+	printf '%s\n' "$top/.venv/bin/python3"
+	exit 0
+fi
+common=$(clean_git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+primary=$(dirname "$common")
+if [ "$(basename "$common")" = ".git" ] && [ "$primary" != "$top" ] && usable "$primary"; then
+	printf '%s\n' "$primary/.venv/bin/python3"
+fi
+exit 0
