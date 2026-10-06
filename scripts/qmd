@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Run an installed npm QMD against this vault's own index.
+
+Every call is pinned to <vault>/.qmd/ (index.sqlite, index.yml, trusted.json), so a vault
+never reads or writes another vault's index or the global ~/.cache/qmd one. The pin has three
+parts: INDEX_PATH and QMD_CONFIG_DIR point at .qmd/, and the working directory is the vault
+root, because QMD adopts the nearest .qmd/index.yml above the working directory and that must
+be this one. Runs QMD with its co-installed Node, avoiding ABI mismatch.
+"""
+import vaultconf
+import os
+from pathlib import Path
+import shutil
+import sys
+
+STATE = vaultconf.ROOT / ".qmd"
+# Commands that read or write the index. Without .qmd/ they would create an empty one.
+NEEDS_INDEX = {"search", "query", "vsearch", "get", "multi-get", "ls", "status", "update",
+               "embed", "cleanup", "mcp", "bench"}
+if sys.argv[1:2] and sys.argv[1] in NEEDS_INDEX and not (STATE / "index.sqlite").is_file():
+    raise SystemExit("No retrieval index for this vault; run make retrieval-setup.")
+os.environ["INDEX_PATH"] = str(STATE / "index.sqlite")
+os.environ["QMD_CONFIG_DIR"] = str(STATE)
+os.environ["PWD"] = str(vaultconf.ROOT)
+os.chdir(vaultconf.ROOT)
+
+binary = shutil.which("qmd")
+if not binary:
+    raise SystemExit("QMD is missing. Install @tobilu/qmd, then retry.")
+resolved = Path(binary).resolve()
+package = resolved.parent.parent
+cli = package / "dist/cli/qmd.js"
+if not cli.is_file():
+    # Non-npm distributions own their runtime; do not guess their layout.
+    if sys.argv[1:2] == ["--vault-refresh"]:
+        raise SystemExit("Vault refresh requires npm QMD 2.8.x (@tobilu/qmd); install it, then run make retrieval-setup.")
+    os.execv(binary, [binary, *sys.argv[1:]])
+node = os.environ.get("QMD_NODE")
+if not node:
+    node = next((str(p / "bin/node") for p in package.parents
+                 if (p / "bin/node").is_file()), None)
+node = node or shutil.which("node")
+if not node:
+    raise SystemExit("No Node runtime found for QMD.")
+if sys.argv[1:2] == ["--vault-refresh"]:
+    collection = vaultconf.load()["name"]
+    if not collection:
+        raise SystemExit(vaultconf.check_initialized())
+    script = Path(__file__).resolve().with_name("refresh-qmd.mjs")
+    os.execv(node, [node, str(script), str(package), collection, *sys.argv[2:]])
+os.execv(node, [node, str(cli), *sys.argv[1:]])

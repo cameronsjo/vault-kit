@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Install the vault hooks in Git's common hook directory and point this repository at it.
+
+The hooks are links in <common-dir>/hooks. Git ignores that directory when core.hooksPath is
+set anywhere, and a global core.hooksPath (a hook manager, say) is common, so this script
+also sets the repository-local core.hooksPath to <common-dir>/hooks: local config overrides
+global, so the vault's hooks run.
+
+A global or system core.hooksPath (often an employer's own secret scan) would then stop
+running here, so it is chained instead: its directory is recorded in the repository-local
+vaultkit.chainHooksPath, and .githooks/pre-commit and pre-merge-commit run the same-named
+executable hook from it first and stop the commit if it fails. Every other executable hook
+there (pre-push, commit-msg, post-checkout, ...) gets a pass-through link to
+.githooks/chain-passthrough, which runs it with the same arguments and input. The chain is
+refused, with a WARNING, when the global value is a relative path (Git resolves it inside each
+repository, so the repository's own files would choose the hooks) or names this vault's own
+hooks. --no-chain skips chaining, with a WARNING. --uninstall removes the links, unsets
+vaultkit.chainHooksPath, and unsets the local core.hooksPath only when it is the value this
+script set.
+"""
+import vaultconf  # noqa: F401  (toolchain preflight)
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+# pre-commit checks every commit; pre-merge-commit checks a merge Git completes on
+# its own, which skips pre-commit.
+HOOKS = ("pre-commit", "pre-merge-commit")
+# Every other hook Git runs (githooks(5)). One of these in the chained directory gets a link
+# to PASSTHROUGH, so a global pre-push or commit-msg keeps running in the vault.
+GIT_HOOK_NAMES = (
+    "applypatch-msg", "pre-applypatch", "post-applypatch", "prepare-commit-msg", "commit-msg",
+    "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push", "pre-receive",
+    "update", "proc-receive", "post-receive", "post-update", "reference-transaction",
+    "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate",
+    "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist",
+    "p4-pre-submit", "post-index-change")
+PASSTHROUGH = "chain-passthrough"
+
+UNINSTALL = "--uninstall" in sys.argv[1:]
+NO_CHAIN = "--no-chain" in sys.argv[1:]
+if set(sys.argv[1:]) - {"--uninstall", "--no-chain"}:
+    raise SystemExit("usage: install-hooks [--no-chain] | --uninstall")
+CHAIN_KEY = "vaultkit.chainHooksPath"
+root = Path(__file__).resolve().parent.parent
+common = Path(subprocess.check_output(
+    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root, text=True).strip())
+hooks = common / "hooks"
+hooks.mkdir(exist_ok=True)
+
+
+def git_config(*args):
+    result = subprocess.run(["git", "config", *args], cwd=root, capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def same_dir(value):
+    """Whether a core.hooksPath value names the common hooks directory."""
+    path = Path(os.path.expanduser(value))
+    if not path.is_absolute():
+        path = root / path
+    return os.path.realpath(path) == os.path.realpath(hooks)
+
+
+def active_hooks_path():
+    out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+                         cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    return out
+
+
+def unset_chain():
+    chained = git_config("--local", "--get", CHAIN_KEY)
+    if chained is not None:
+        subprocess.run(["git", "config", "--local", "--unset", CHAIN_KEY], cwd=root, check=True)
+        print(f"Unset {CHAIN_KEY} ({chained}): the hooks there are no longer chained.")
+    sync_passthroughs(None)
+
+
+def is_passthrough(hook):
+    """A link this script made to .githooks/chain-passthrough (any anchor)."""
+    if not hook.is_symlink():
+        return False
+    target = os.readlink(hook)
+    return (os.path.basename(target) == PASSTHROUGH
+            and os.path.basename(os.path.dirname(target)) == ".githooks")
+
+
+def sync_passthroughs(chain_dir):
+    """Link PASSTHROUGH under the name of each other executable hook in chain_dir, and remove
+    the pass-through links no longer wanted (all of them when chain_dir is None)."""
+    wanted = [] if chain_dir is None else [
+        name for name in GIT_HOOK_NAMES
+        if (chain_dir / name).is_file() and os.access(chain_dir / name, os.X_OK)]
+    for hook in sorted(hooks.iterdir()):
+        if hook.name not in wanted and is_passthrough(hook):
+            hook.unlink()
+            print(f"Removed the pass-through {hook.name} hook ({hook}).")
+    if not wanted:
+        return
+    target = common.parent / ".githooks" / PASSTHROUGH
+    if not target.is_file() or not os.access(target, os.X_OK):
+        print(f"WARNING: {target} is missing or not executable, so these hooks in {chain_dir} "
+              f"do not run for this repository: {', '.join(wanted)}.")
+        return
+    expected = os.path.relpath(target, hooks)
+    for name in wanted:
+        hook = hooks / name
+        if hook.is_symlink() and os.readlink(hook) == expected:
+            print(f"Pass-through {name} hook already installed ({hook} -> {expected}).")
+        elif is_passthrough(hook):
+            hook.unlink()
+            hook.symlink_to(expected)
+            print(f"Re-anchored the pass-through {name} hook ({hook} -> {expected}).")
+        elif hook.exists() or hook.is_symlink():
+            print(f"WARNING: {hook} is not a vault-kit link, so the chained {name} hook in "
+                  f"{chain_dir} does not run for this repository; chain it there yourself.")
+        else:
+            hook.symlink_to(expected)
+            print(f"Passing through {name}: {hook} -> {expected} runs the chained {name} hook "
+                  f"in {chain_dir}.")
+
+
+def outer_hooks_path():
+    """(scope, value) of the global or system core.hooksPath Git would use without the local
+    one; global overrides system, as in Git. None when neither is set."""
+    for scope in ("global", "system"):
+        value = git_config(f"--{scope}", "--type=path", "--get", "core.hooksPath")
+        if value:
+            return scope, value
+    return None
+
+
+local_path = git_config("--local", "--get", "core.hooksPath")
+if UNINSTALL:
+    # Remove only links that point at this repo's .githooks; leave anything else.
+    for name in HOOKS:
+        hook = hooks / name
+        if hook.is_symlink() and os.path.basename(os.path.dirname(os.readlink(hook))) == ".githooks":
+            hook.unlink()
+            print(f"Removed repository {name} hook ({hook}).")
+        elif hook.exists() or hook.is_symlink():
+            print(f"Left {hook}: not this repo's hook.")
+        else:
+            print(f"No {name} hook installed.")
+    if local_path is not None and same_dir(local_path):
+        subprocess.run(["git", "config", "--local", "--unset", "core.hooksPath"], cwd=root, check=True)
+        print(f"Unset the repository-local core.hooksPath ({local_path}).")
+    elif local_path is not None:
+        print(f"Left the repository-local core.hooksPath ({local_path}): this script did not set it.")
+    unset_chain()  # also removes the pass-through links
+    print(f"Active hooks path: {active_hooks_path()}")
+    raise SystemExit(0)
+plans, problems = [], []
+for name in HOOKS:
+    # The common hook dir is shared by every worktree and lives beside the primary
+    # checkout, so the hook links to the primary's .githooks even when this script
+    # runs from a worktree. Anchor the target there, not at this script's root.
+    target = common.parent / ".githooks" / name
+    hook = hooks / name
+    expected = os.path.relpath(target, hooks)
+    if not target.is_file() or not os.access(target, os.X_OK):
+        problems.append(
+            f"{target} is missing or not executable; check out the primary checkout's "
+            f".githooks/{name} (and chmod +x it) before installing. A dangling hook link "
+            f"is skipped silently by git, which would leave commits unvalidated.")
+    elif not (hook.exists() or hook.is_symlink()):
+        plans.append((name, hook, expected, None))
+    elif not hook.is_symlink():
+        problems.append(f"{hook} is a real file; chain it to {target} before installing.")
+    elif os.readlink(hook) == expected:
+        plans.append((name, hook, expected, expected))
+    elif os.path.basename(os.path.dirname(os.readlink(hook))) == ".githooks":
+        # This repo's own hook, linked by an older anchor (a worktree path): re-anchor it.
+        plans.append((name, hook, expected, os.readlink(hook)))
+    else:
+        problems.append(f"{hook} -> {os.readlink(hook)} is not this repo's hook; chain it to {target} before installing.")
+# A local core.hooksPath that names another existing directory is someone's hook setup:
+# refuse rather than replace it. One naming a directory that no longer exists (a clone
+# that moved) is re-pointed.
+repoint = None
+if local_path is not None and not same_dir(local_path):
+    candidate = Path(os.path.expanduser(local_path))
+    candidate = candidate if candidate.is_absolute() else root / candidate
+    if candidate.is_dir():
+        problems.append(f"the repository-local core.hooksPath is {local_path}, not {hooks}; chain "
+                        f"its hooks to .githooks/ or unset it (git config --local --unset "
+                        f"core.hooksPath) before installing.")
+    else:
+        repoint = local_path
+if problems:
+    # Check every hook before linking any, so a refusal never leaves one installed alone.
+    raise SystemExit("\n".join(problems + ["No hook was installed or changed."]))
+for name, hook, expected, current in plans:
+    if current == expected:
+        print(f"Repository {name} hook already installed ({hook} -> {expected}).")
+        continue
+    if current is not None:
+        hook.unlink()
+        print(f"Re-anchored {hook}: {current} -> {expected}")
+    hook.symlink_to(expected)
+    if current is None:
+        print(f"Installed repository {name} hook ({hook} -> {expected}).")
+if local_path is None or repoint is not None:
+    subprocess.run(["git", "config", "--local", "core.hooksPath", str(hooks)], cwd=root, check=True)
+    print(f"Set the repository-local core.hooksPath to {hooks}"
+          + (f" (was {repoint}, which no longer exists)." if repoint else "."))
+outer = outer_hooks_path()
+if outer is not None and not same_dir(outer[1]):
+    scope, other = outer
+    # Git runs a relative core.hooksPath from the top of the work tree.
+    chain_dir = Path(other) if Path(other).is_absolute() else root / other
+    own = {os.path.realpath(d) for d in (root / ".githooks", common.parent / ".githooks", hooks)}
+    if not NO_CHAIN and not Path(other).is_absolute():
+        unset_chain()
+        print(f"WARNING: Not chaining: {scope} core.hooksPath is {other}, a relative path. Git "
+              f"resolves it inside each repository, so this repository's own files would decide "
+              f"which hooks run. The vault's hooks run here; the {scope} hooks do not. Set an "
+              f"absolute {scope} core.hooksPath and run install-hooks again to chain it.")
+    elif not NO_CHAIN and os.path.realpath(chain_dir) in own:
+        unset_chain()
+        print(f"WARNING: Not chaining: {scope} core.hooksPath is {other}, which is this vault's "
+              f"own hook directory; chaining it would run the vault's hooks from themselves.")
+    elif NO_CHAIN:
+        unset_chain()
+        print(f"WARNING: {scope} core.hooksPath is {other}. --no-chain: the repository-local "
+              f"core.hooksPath overrides it, so the vault's hooks run here and the hooks in {other} "
+              f"do not run for this repository.")
+    else:
+        subprocess.run(["git", "config", "--local", CHAIN_KEY, str(chain_dir)], cwd=root, check=True)
+        print(f"Chaining: {scope} core.hooksPath is {other}. The repository-local core.hooksPath "
+              f"overrides it, so the vault's hooks run here, and each one first runs the same-named "
+              f"hook in {chain_dir} (recorded in {CHAIN_KEY}); if that hook fails, the commit stops. "
+              f"Run install-hooks --no-chain to skip them.")
+        sync_passthroughs(chain_dir)
+else:
+    unset_chain()
+active = active_hooks_path()
+if os.path.realpath(active) != os.path.realpath(hooks):
+    raise SystemExit(f"Active hooks path is {active}, not {hooks}; the vault's hooks would not run. "
+                     "Check `git config --show-origin --get-all core.hooksPath`.")
+print(f"Active hooks path: {active} (repository-local core.hooksPath)")
+print("Verify the effective hook chain after staging: git hook run pre-commit && git hook run pre-merge-commit")

@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Set up or tear down this vault's QMD retrieval index (make retrieval-setup / retrieval-teardown).
+
+All state lives in <vault>/.qmd/ (gitignored): index.sqlite (documents and embeddings),
+index.yml (collection, ignore rule, context) and trusted.json. Nothing is written to
+~/.cache/qmd or ~/.config/qmd; the only shared file is the embedding model cache.
+
+  retrieval-setup setup [--lexical-only]   register, exclude wiki/log.md, add context, refresh
+  retrieval-setup teardown                 remove the collection and delete .qmd/
+
+Both are idempotent.
+"""
+import vaultconf
+import shutil
+import subprocess
+import sys
+
+import yaml
+
+ROOT = vaultconf.ROOT
+STATE = ROOT / ".qmd"
+CONFIG = STATE / "index.yml"
+QMD = str(ROOT / "scripts/qmd")
+MASK = "wiki/**/*.md"
+EXCLUDE = ["wiki/log.md"]
+
+
+def run(*args):
+    result = subprocess.run(args, cwd=ROOT, text=True)
+    if result.returncode:
+        raise SystemExit(f"{' '.join(args[1:3])} exited {result.returncode}")
+
+
+def registered(name):
+    if not CONFIG.is_file():
+        return False
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
+    return name in (data.get("collections") or {})
+
+
+def set_ignore(name):
+    """QMD's CLI cannot set a collection's ignore list; its index.yml can."""
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    ignore = data["collections"][name].setdefault("ignore", [])
+    changed = False
+    for pattern in EXCLUDE:
+        if pattern not in ignore:
+            ignore.append(pattern)
+            changed = True
+    if changed:
+        CONFIG.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def setup(name, config, refresh_flags):
+    if STATE.is_symlink() or (STATE.exists() and not STATE.is_dir()):
+        raise SystemExit(f"{STATE} must be a plain directory; remove it and retry")
+    STATE.mkdir(exist_ok=True)
+    if not registered(name):
+        run(QMD, "collection", "add", ".", "--name", name, "--mask", MASK)
+    set_ignore(name)
+    run(QMD, "context", "add", f"qmd://{name}/", f"{config['title']}: {config['scope']}")
+    run(str(ROOT / "scripts/refresh-qmd"), *refresh_flags)
+    run(QMD, "cleanup")
+    print(f"PASS: retrieval set up for {name}; index at {STATE}")
+
+
+def teardown(name):
+    if STATE.is_symlink():
+        raise SystemExit(f"{STATE} is a symlink; refusing to delete through it")
+    if not STATE.exists():
+        print("Nothing to tear down; no .qmd/ directory.")
+        return
+    if registered(name):
+        run(QMD, "collection", "remove", name)
+    shutil.rmtree(STATE)
+    print(f"PASS: retrieval removed for {name}; deleted {STATE}")
+
+
+def main(argv):
+    mode, flags = (argv[:1] or [""])[0], argv[1:]
+    if mode not in ("setup", "teardown") or (mode == "teardown" and flags) \
+            or any(f != "--lexical-only" for f in flags):
+        raise SystemExit("usage: retrieval-setup setup [--lexical-only] | teardown")
+    message = vaultconf.check_initialized()
+    if message:
+        raise SystemExit(message)
+    config = vaultconf.load()
+    if mode == "setup":
+        setup(config["name"], config, flags)
+    else:
+        teardown(config["name"])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

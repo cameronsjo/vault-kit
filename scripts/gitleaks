@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Run gitleaks pinned by version and SHA-256; pass every argument through.
+
+Resolution order:
+  1. GITLEAKS_BIN: an operator-installed gitleaks. `<bin> version` must print the pinned
+     version, or the wrapper exits 2; GITLEAKS_ALLOW_UNPINNED=1 runs another version (or
+     any executable) with a loud warning. CI never sets it.
+  2. A verified copy under ${XDG_CACHE_HOME:-$HOME/.cache}/vault-kit/gitleaks-<version>/.
+  3. A download of the pinned release archive, verified before it is unpacked.
+     GITLEAKS_DOWNLOAD_BASE replaces the release URL (a mirror); checksums still apply.
+
+Checksum mismatch exits 2. No usable binary exits 2: the scan fails closed, never open.
+`scripts/gitleaks --vault-resolve` prints the verified binary's path and runs nothing.
+"""
+import vaultconf  # noqa: F401  (toolchain preflight)
+import hashlib
+import io
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+VERSION = "8.30.1"
+RELEASE = f"https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}"
+# archive: from gitleaks_<VERSION>_checksums.txt on the release.
+# binary: SHA-256 of the gitleaks file inside that verified archive, re-checked every run.
+PINNED = {
+    "darwin_arm64": {
+        "archive": "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+        "binary": "ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f",
+    },
+    "darwin_x64": {
+        "archive": "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+        "binary": "cee01fea7173f1b779dff188e1c26ecbcb4027d394acc573b23aaf0be260e291",
+    },
+    "linux_x64": {
+        "archive": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+        "binary": "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509",
+    },
+}
+INSTALL_HINT = (f"Install gitleaks {VERSION} (https://github.com/gitleaks/gitleaks/releases/tag/v{VERSION}, "
+                "or your package manager), then set GITLEAKS_BIN to its path and retry. "
+                "The secret scan fails closed: nothing was scanned.")
+
+
+def refuse(message):
+    print(f"gitleaks wrapper: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def target():
+    system = platform.system()
+    machine = platform.machine().lower()
+    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "amd64": "x64"}.get(machine)
+    name = f"{system.lower()}_{arch}"
+    if name not in PINNED:
+        refuse(f"no pinned gitleaks build for {system} {machine}. {INSTALL_HINT}")
+    return name
+
+
+def fetch(url):
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            return response.read()
+    except Exception as error:  # noqa: BLE001  (any failure falls through to curl)
+        first = error
+    curl = shutil.which("curl")
+    if curl:
+        result = subprocess.run([curl, "-fsSL", "--max-time", "120", url], capture_output=True)
+        if result.returncode == 0:
+            return result.stdout
+    refuse(f"could not download {url} ({first}). {INSTALL_HINT}")
+
+
+def download(name, binary):
+    pins = PINNED[name]
+    archive_name = f"gitleaks_{VERSION}_{name}.tar.gz"
+    base = os.environ.get("GITLEAKS_DOWNLOAD_BASE") or RELEASE
+    archive = fetch(f"{base.rstrip('/')}/{archive_name}")
+    if sha256(archive) != pins["archive"]:
+        refuse(f"checksum mismatch for downloaded {archive_name}: expected {pins['archive']}, "
+               f"got {sha256(archive)}. Refusing to run it.")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        member = tar.getmember("gitleaks")
+        if not member.isfile():
+            refuse(f"{archive_name}: gitleaks is not a regular file. Refusing to run it.")
+        data = tar.extractfile(member).read()
+    if sha256(data) != pins["binary"]:
+        refuse(f"checksum mismatch for gitleaks inside {archive_name}: expected {pins['binary']}, "
+               f"got {sha256(data)}. Refusing to run it.")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    # Write beside the target and rename, so a concurrent run never sees a partial file.
+    with tempfile.NamedTemporaryFile(dir=binary.parent, delete=False) as temp:
+        temp.write(data)
+    os.chmod(temp.name, 0o755)
+    os.replace(temp.name, binary)
+
+
+def resolve():
+    override = os.environ.get("GITLEAKS_BIN")
+    if override:
+        if not (os.path.isfile(override) and os.access(override, os.X_OK)):
+            refuse(f"GITLEAKS_BIN={override} is not an executable file. {INSTALL_HINT}")
+        try:
+            found = subprocess.run([override, "version"], capture_output=True, text=True,
+                                   timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            found = ""
+        if found != VERSION:
+            if os.environ.get("GITLEAKS_ALLOW_UNPINNED") != "1":
+                refuse(f"GITLEAKS_BIN={override} reports version {found or '(none)'}, not the pinned "
+                       f"{VERSION}. Install gitleaks {VERSION}, or set GITLEAKS_ALLOW_UNPINNED=1 to run "
+                       "it anyway. The secret scan fails closed: nothing was scanned.")
+            print(f"gitleaks wrapper: WARNING: GITLEAKS_ALLOW_UNPINNED=1: running GITLEAKS_BIN={override}, "
+                  f"which reports version {found or '(none)'}, not the pinned {VERSION}. Its result is "
+                  "not the pinned scan's result.", file=sys.stderr)
+        return override
+    name = target()
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    binary = cache / "vault-kit" / f"gitleaks-{VERSION}" / "gitleaks"
+    if not binary.is_file():
+        download(name, binary)
+    found = sha256(binary.read_bytes())
+    if found != PINNED[name]["binary"]:
+        refuse(f"checksum mismatch for cached {binary}: expected {PINNED[name]['binary']}, got {found}. "
+               f"Refusing to run it. Delete {binary.parent} to download a fresh copy.")
+    return str(binary)
+
+
+if __name__ == "__main__":
+    path = resolve()
+    if sys.argv[1:] == ["--vault-resolve"]:
+        print(path)
+        raise SystemExit(0)
+    os.execv(path, [path, *sys.argv[1:]])

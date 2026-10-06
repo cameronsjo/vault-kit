@@ -1,0 +1,20 @@
+#!/bin/sh
+# scripts/install-hooks links this file under the name of every other executable hook it
+# finds in the chained directory (vaultkit.chainHooksPath): pre-push, commit-msg,
+# post-checkout and the like. The repository-local core.hooksPath that lets the vault's own
+# hooks run would otherwise stop those from running here. It runs the same-named chained
+# hook with the same arguments and standard input, and exits with its status.
+set -eu
+# A chain that leads back into this hooks directory must not call itself without end.
+hook=$(basename "$0")
+if [ -n "${VAULTKIT_CHAINED:-}" ]; then
+	echo "vault-kit: VAULTKIT_CHAINED is set; skipping the chained $hook" >&2
+	exit 0
+fi
+chain=$(git config --local --get vaultkit.chainHooksPath || true)
+if [ -z "$chain" ] || [ ! -x "$chain/$hook" ]; then
+	exit 0
+fi
+VAULTKIT_CHAINED=1
+export VAULTKIT_CHAINED
+exec "$chain/$hook" "$@"

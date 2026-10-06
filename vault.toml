@@ -1,0 +1,17 @@
+# vault-kit configuration, read by every script in scripts/ at run time.
+# In the template repo `template = true`; scripts/init-vault sets the rest.
+template = true
+name = ""        # slug: lowercase kebab-case, used in skill names and the QMD collection
+title = ""       # display title
+scope = ""       # one phrase naming what the vault covers
+root_env = ""    # env var holding the vault path; empty derives <NAME_UPPER_SNAKE>_ROOT
+
+[redaction]
+# Python regexes, matched case-insensitively against every tracked non-binary file
+# except this one. make check names a hit by path, line and pattern number (from 1),
+# never by its text. Use literal (single-quoted) strings so backslashes stay as typed:
+# deny = [
+#   '\binternal\.example\.test\b',   # an internal host
+#   '\bproject-codename\b',          # an unreleased product name
+# ]
+deny = []

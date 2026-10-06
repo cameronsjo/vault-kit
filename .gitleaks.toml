@@ -1,0 +1,17 @@
+# Secret-scan config for scripts/gitleaks (make secrets). It extends gitleaks's
+# default rules and allows nothing extra. It belongs to the vault, not the
+# engine: it is not in engine.manifest, so an engine update leaves it alone.
+#
+# To exempt a path (a fixture of known fake values, say), uncomment the block
+# below and list Go regexes matched against the repo-relative path. gitleaks
+# refuses an [[allowlists]] block with no checks in it, so keep it commented
+# until it has one. Every exemption is reviewed like code: this file is part of
+# the vault's trust root. Inline `gitleaks:allow` comments are ignored on
+# purpose (make secrets passes --ignore-gitleaks-allow).
+
+[extend]
+useDefault = true
+
+# [[allowlists]]
+# description = "Known fake values"
+# paths = ['''^tests/fixtures/''']
