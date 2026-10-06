@@ -20,12 +20,15 @@ stops. It runs nothing from the fetched ref: review the diff, then run
 Exit codes: 0 updated; 2 usage error or refusal (dirty tree, unsafe manifest path,
 --commit mismatch); 3 the ref could not be fetched.
 """
+import sys
+# Importing vaultconf would write scripts/__pycache__/, which the dirty-tree check then
+# refuses in a vault whose ignore rules do not cover it.
+sys.dont_write_bytecode = True
 import vaultconf  # toolchain preflight; must precede everything else
 import argparse
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
-import sys
 import tempfile
 
 ROOT = vaultconf.ROOT
