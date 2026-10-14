@@ -16,6 +16,8 @@ scripts/qmd
 scripts/refresh-qmd
 scripts/refresh-qmd.mjs
 scripts/test-hooks.py
+scripts/test-env.sh
+scripts/test-test-env.py
 scripts/test-install-discovery.sh
 scripts/vaultconf.py
 scripts/engine-update
