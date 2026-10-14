@@ -87,7 +87,7 @@ test-init:
 test-tripwire:
 	bash scripts/test-env.sh bash scripts/test-tripwire.sh
 test-env:
-	$(PYTHON) scripts/test-test-env.py
+	bash scripts/test-env.sh $(PYTHON) scripts/test-test-env.py
 test: test-env test-hooks test-install test-engine-update test-init test-tripwire
 
 # Needs npm QMD installed; not part of `make test`. VAULT_KIT_TEST_SEMANTIC=1 adds the embedding leg.
