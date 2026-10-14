@@ -14,6 +14,7 @@ endif
 endif
 # make setup builds .venv with this interpreter (3.11 or newer), e.g. SETUP_PYTHON=python3.12.
 SETUP_PYTHON ?= python3
+.PHONY: test-env
 
 # Creates .venv, installs requirements-dev.txt into it (nothing outside the repository), and
 # installs the Git hooks. Homebrew's Python refuses a global pip install (PEP 668); the venv
@@ -75,21 +76,23 @@ uninstall-hooks:
 	$(PYTHON) scripts/install-hooks --uninstall
 
 test-hooks:
-	$(PYTHON) scripts/test-hooks.py
+	bash scripts/test-env.sh $(PYTHON) scripts/test-hooks.py
 
 test-install:
-	bash scripts/test-install-discovery.sh
+	bash scripts/test-env.sh bash scripts/test-install-discovery.sh
 test-engine-update:
-	bash scripts/test-engine-update.sh
+	bash scripts/test-env.sh bash scripts/test-engine-update.sh
 test-init:
-	bash scripts/test-init.sh
+	bash scripts/test-env.sh bash scripts/test-init.sh
 test-tripwire:
-	bash scripts/test-tripwire.sh
-test: test-hooks test-install test-engine-update test-init test-tripwire
+	bash scripts/test-env.sh bash scripts/test-tripwire.sh
+test-env:
+	bash scripts/test-env.sh $(PYTHON) scripts/test-test-env.py
+test: test-env test-hooks test-install test-engine-update test-init test-tripwire
 
 # Needs npm QMD installed; not part of `make test`. VAULT_KIT_TEST_SEMANTIC=1 adds the embedding leg.
 test-retrieval:
-	bash scripts/test-retrieval.sh
+	bash scripts/test-env.sh bash scripts/test-retrieval.sh
 
 # Re-render skills/ from templates/skills/ after editing a template or an engine update.
 render-skills:
