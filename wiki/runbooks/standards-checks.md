@@ -23,7 +23,7 @@ The vault's rules are enforced in code, in three places: `make` targets you run 
 | Secrets | `make secrets` (and `make check`) | A pinned gitleaks scan. The default mode, `worktree`, reads every tracked file and every untracked file `.gitignore` does not exclude, so it sees unstaged edits; `SECRETS_MODE=staged` reads the index; `SECRETS_MODE=dir` scans a directory; `SECRETS_MODE=range` scans a commit range; there gitleaks cannot read UTF-16 or UTF-32 text, which the deny-range scan and the tripwire decode instead. `.gitleaks.toml` and `.gitleaksignore` are read from `HEAD` (from the range's base in range mode), so a change to them takes effect from the next commit. |
 | Deny history | `make deny-range` | Every commit in `SECRETS_BASE..HEAD`, one at a time: its message, the path names it touches and the lines it adds, against the base commit's deny list. A UTF-16 or UTF-32 file it adds or changes is decoded and scanned whole. Text a later commit removed still counts. |
 | Initialization | `make check-initialized` | `vault.toml` names the vault. It fails on the unconfigured template. |
-| Tests | `make test` | The history rules below, `install-discovery`, `engine-update`, `init-vault`, and `scripts/tripwire`, each against throwaway fixtures. |
+| Tests | `make test` | The history rules below, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire`, and `scripts/md-outline`, each against throwaway fixtures. |
 | CI | `.github/workflows/check.yml` | `make check`, `make check-initialized` in an instance, the history check, a secret scan and a deny scan of new commits, and `make test`, on every pull request and every push to `main`. |
 
 ## Source and history
