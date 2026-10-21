@@ -24,6 +24,8 @@ scripts/engine-update
 scripts/test-engine-update.sh
 scripts/tripwire
 scripts/test-tripwire.sh
+scripts/md-outline
+scripts/test-md-outline.sh
 engine.manifest
 templates/skills/discover/skill.md.tmpl
 templates/skills/maintain/skill.md.tmpl

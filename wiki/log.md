@@ -47,3 +47,7 @@ Actor: vault-kit/build. `wiki/runbooks/standards-checks.md` now says `make deny-
 ## [2026-10-06] maintenance | Empty indexes end after their heading
 
 Actor: vault-kit/build. `scripts/index-vault.py` no longer writes a trailing blank line into an index with nothing to list, so `docs/plans/index.md`, `wiki/capabilities/index.md`, `wiki/doctrine/index.md`, `wiki/field-reports/index.md` and `wiki/journeys/index.md` were regenerated. Evidence: a fresh repository built from the tracked tree could not make its first commit through the hooks, because `git diff --cached --check` reported "new blank line at EOF" in those five files; `make test-init` now asserts a generated empty index passes `git diff --check`. Gaps: none new.
+
+## [2026-10-19] maintenance | Outline large Markdown files
+
+Actor: vault-kit/build. `wiki/runbooks/retrieval.md` now points at `scripts/md-outline` for files too large to read at once, including `raw/` captures QMD does not index, and `wiki/runbooks/standards-checks.md` lists it among what `make test` covers. The discover and maintain skill templates say to outline a file over 256 KB and read one section by line range. Evidence: `make test-md-outline` passes on fixtures covering frontmatter, fenced code, setext and closing-hash headings, CRLF input and bad input; a generated 1.09 MB page with 400 sections outlines in about 50 ms. Gaps: not yet used on a real large capture; HTML headings are not outlined.

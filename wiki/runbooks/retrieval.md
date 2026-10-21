@@ -55,6 +55,8 @@ Behind a proxy or offline:
 
 If retrieval is unavailable, read the Markdown directly: start at `wiki/index.md` and follow the links.
 
+For a file too large to read at once (over about 256 KB), including `raw/` captures, which QMD does not index, run `scripts/md-outline <file>`. It lists each heading with its line range and size and skips frontmatter; read the section you need by that range.
+
 ## Provenance
 
 Commands and paths above were measured with QMD 2.8.3 on 2026-10-05: a project-local `.qmd/` is adopted by walking up from the working directory (so the launcher changes into the vault root), `INDEX_PATH` and `QMD_CONFIG_DIR` pin the index and config, and an `ignore` list in the collection config removes a file from the index on the next update.

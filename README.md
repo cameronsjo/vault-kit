@@ -27,7 +27,7 @@ requirements-dev.txt        PyYAML, pinned
 .github/workflows/check.yml CI
 .github/CODEOWNERS          code owners: every path except content (an allowlist)
 .obsidian/                  app, core-plugin and template settings; Sync is off
-scripts/                    all code: checks, init, install, retrieval, engine update, tests
+scripts/                    all code: checks, init, install, retrieval, outline, engine update, tests
 templates/skills/           templates for the two agent skills
 skills/                     rendered skills, created by init (<name>-discover, <name>-maintain)
 raw/                        immutable source captures (created with the first capture)
@@ -270,6 +270,7 @@ Retrieval gives agents keyword and semantic search over `wiki/` using QMD. The d
 - `make retrieval-teardown` removes the collection and deletes `.qmd/`. It refuses if `.qmd` is a symlink.
 - `make retrieval` runs `scripts/check-retrieval.py`: a negative control, then a temporary page that must appear in a search after an update, change after an edit, and disappear after deletion.
 - Search: `scripts/qmd search "terms" -c <name>` (keyword), `scripts/qmd query "question" -c <name>` (hybrid), `scripts/qmd vsearch "question" -c <name>` (vector).
+- Large files. Claude Code's Read refuses a file over about 256 KB or 25,000 tokens without an offset and a limit, and QMD indexes only `wiki/`. `scripts/md-outline <file> [--json]` prints each heading with its line range and size in bytes, skipping YAML frontmatter and fenced code, so an agent reads one section of a large page or `raw/` capture instead of the whole file. It uses the standard library only and caches nothing.
 
 ### Engine update
 
@@ -308,7 +309,7 @@ Commands:
 
 - `make check`: the vault check, the index check, and the secret scan.
 - `make refresh`: `make check`, then update and embed the search index.
-- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault` and `scripts/tripwire`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
+- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire` and `scripts/md-outline`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
 - `make indexes`: regenerate the directory indexes.
 
 ## Updating

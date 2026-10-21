@@ -56,7 +56,7 @@ This skill runs before a domain skill, not instead of one. Once it answers, hand
 
    Try two or three phrasings (the outcome noun, the interface noun, a likely product name) before concluding no-match.
 
-5. **Read only the matched pages.** For a capability card, read `## Available support`, `## Inputs, outputs, and interfaces`, and `## Limitations`. If a card has none of those headings, read the whole card; it is short. Also read frontmatter `generated.at` and any `verified` block.
+5. **Read only the matched pages.** For a capability card, read `## Available support`, `## Inputs, outputs, and interfaces`, and `## Limitations`. If a card has none of those headings, read the whole card; it is short. A page over 256 KB will not fit in one read: outline it first, with `"$root/scripts/md-outline" <path>` or a Grep for `^#{1,6} ` with line numbers, then read only the section you need by its line range. Also read frontmatter `generated.at` and any `verified` block.
 
 6. **Answer with one table, always this shape, zero rows allowed**, and the Recommendation line as the final line of the reply.
 
