@@ -31,8 +31,10 @@ import sys
 sys.dont_write_bytecode = True
 import vaultconf  # toolchain preflight; must precede everything else
 import argparse
+import importlib.machinery
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -110,23 +112,34 @@ def has_symlink_component(base, rel):
 
 
 HIDDEN_NAMES = {"__pycache__", ".gitignore", ".gitattributes"}
-BYTECODE_SUFFIXES = {".pyc", ".pyo"}
+# Bytecode and native extension modules: Python imports them in place of the reviewed .py.
+UNREADABLE_SUFFIXES = {".pyc", ".pyo", ".so", ".pyd", ".dylib",
+                       *(suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES)}
+# Bytes a reviewer cannot read: NUL (git shows "Binary files differ"), and terminal controls
+# (ESC sequences and bare carriage returns can redraw the review). Tab and newline are fine.
+CONTROL_BYTES = re.compile(rb"[\x00-\x08\x0b-\x1f\x7f]")
 
 
-def invisible_to_review(rel):
-    """True when git status and git diff would not show the file to the reviewer.
+def hidden_by_name(rel):
+    """True for a path git status or git diff would not show the reviewer in full.
 
     A planted unchecked-hash .pyc under scripts/__pycache__ loads in place of the reviewed
     source, and .gitignore hides it; .gitignore and .gitattributes can hide or blank others.
     """
     folded_parts = {part.casefold() for part in rel.parts}
-    if folded_parts & HIDDEN_NAMES or rel.suffix.casefold() in BYTECODE_SUFFIXES:
-        return True
-    ignored = subprocess.run(["git", "check-ignore", "-q", "--no-index", "--", str(rel)], cwd=ROOT,
-                             capture_output=True)
-    if ignored.returncode not in (0, 1):  # 1: not ignored; anything else is git failing
-        refuse(f"git check-ignore failed for {rel}: {ignored.stderr.decode().strip()}")
-    return ignored.returncode == 0
+    name = rel.name.casefold()
+    return bool(folded_parts & HIDDEN_NAMES) or any(name.endswith(s) for s in UNREADABLE_SUFFIXES)
+
+
+def ignored_paths(rels):
+    """The subset of rels this vault's git ignores, from one git check-ignore call."""
+    if not rels:
+        return set()
+    result = subprocess.run(["git", "check-ignore", "--no-index", "--stdin", "-z"], cwd=ROOT,
+                            input="".join(f"{rel}\0" for rel in rels).encode(), capture_output=True)
+    if result.returncode not in (0, 1):  # 1: none ignored; anything else is git failing
+        refuse(f"git check-ignore failed: {result.stderr.decode().strip()}")
+    return {Path(name) for name in result.stdout.decode().split("\0") if name}
 
 
 def read_manifest(clone):
@@ -151,10 +164,16 @@ def read_manifest(clone):
             refuse(f"{where}: {entry} is not a regular file in that ref")
         if has_symlink_component(ROOT, rel):
             refuse(f"{where}: {entry} has a symlink component in this vault")
-        if invisible_to_review(rel):
-            refuse(f"{where}: {entry} would be hidden from the review (bytecode, a git ignore or "
-                   "attributes file, or a path this vault's git ignores)")
+        if hidden_by_name(rel):
+            refuse(f"{where}: {entry} would be hidden from the review (bytecode, a native module, "
+                   "or a git ignore or attributes file)")
+        if CONTROL_BYTES.search((clone / rel).read_bytes()):
+            refuse(f"{where}: {entry} holds binary or terminal control bytes the review cannot read")
         paths.append(rel)
+    ignored = ignored_paths(paths)
+    if ignored:
+        refuse(f"would be hidden from the review: this vault's git ignores "
+               f"{', '.join(sorted(map(str, ignored)))}")
     vale = vaultconf.vale_errors(clone, paths)
     if vale:
         refuse("the ref's Vale config is outside the allowlist; nothing was copied:\n  "
