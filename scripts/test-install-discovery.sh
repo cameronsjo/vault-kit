@@ -264,11 +264,78 @@ out=$(git_run --pointer --parent "$p1" --parent "$p2" 2>&1); rc=$?
 [ "$rc" -ne 0 ] && [ ! -e "$p1/AGENTS.md" ] && grep -q 'dangling symlink' <<<"$out" ||
   { echo "FAIL: a dangling CLAUDE.md in the second parent did not stop the first write (rc=$rc): $out"; fail=1; }
 git -C "$git_root" config --local --get-all vaultkit.pointerDir >/dev/null && { echo "FAIL: a refused run recorded a parent"; fail=1; }
+rm "$p2/CLAUDE.md"
+
+echo "--- --remove-parent removes one pointer and leaves the other, its record, the skills, and Codex"
+records() { git -C "$git_root" config --local --get-all vaultkit.pointerDir; }
+git_run --pointer --pointer-codex --skills --parent "$p1" --parent "$p2" >/dev/null || { echo "FAIL: install for --remove-parent exit $?"; fail=1; }
+links_before=$(find "$fake_home" -type l | sort)
+out=$(git_run --remove-parent "$p1"); rc=$?
+[ "$rc" -eq 0 ] || { echo "FAIL: --remove-parent exit $rc: $out"; fail=1; }
+[ ! -e "$p1/AGENTS.md" ] && [ ! -L "$p1/CLAUDE.md" ] || { echo "FAIL: --remove-parent left the pointer in $p1"; fail=1; }
+grep -q "$vault_name:start" "$p2/AGENTS.md" && [ -L "$p2/CLAUDE.md" ] || { echo "FAIL: --remove-parent touched the other pointer"; fail=1; }
+[ "$(records)" = "$p2" ] || { echo "FAIL: records after --remove-parent: $(records)"; fail=1; }
+[ "$(find "$fake_home" -type l | sort)" = "$links_before" ] || { echo "FAIL: --remove-parent changed the skill links"; fail=1; }
+grep -q "$vault_name:start" "$fake_home/.codex/AGENTS.md" || { echo "FAIL: --remove-parent removed the Codex block"; fail=1; }
+
+echo "--- --remove-parent with --pointer moves a pointer in one run"
+out=$(git_run --remove-parent "$p2" --pointer --parent "$p1"); rc=$?
+[ "$rc" -eq 0 ] || { echo "FAIL: move exit $rc: $out"; fail=1; }
+[ ! -e "$p2/AGENTS.md" ] && grep -q "$vault_name:start" "$p1/AGENTS.md" || { echo "FAIL: move did not swap the pointer"; fail=1; }
+[ "$(records)" = "$p1" ] || { echo "FAIL: records after move: $(records)"; fail=1; }
+
+echo "--- --remove-parent refuses an unknown name before removing anything, and bad combinations"
+err=$(git_run --remove-parent "$p1" --remove-parent "$fake_parent/never-there" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'not a directory and not recorded' <<<"$err" || { echo "FAIL: unknown --remove-parent (rc=$rc): $err"; fail=1; }
+grep -q "$vault_name:start" "$p1/AGENTS.md" || { echo "FAIL: a refused --remove-parent removed $p1"; fail=1; }
+err=$(git_run --uninstall --remove-parent "$p1" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'cannot be combined with --uninstall' <<<"$err" || { echo "FAIL: --uninstall --remove-parent (rc=$rc): $err"; fail=1; }
+err=$(git_run --pointer --parent "$p1" --remove-parent "$p1" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'name the same directory' <<<"$err" || { echo "FAIL: same dir in --parent and --remove-parent (rc=$rc): $err"; fail=1; }
+grep -q "$vault_name:start" "$p1/AGENTS.md" || { echo "FAIL: a refused combination removed $p1"; fail=1; }
+err=$(git_run --remove-parent "$p1" --parent "$p2" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'does nothing without --pointer' <<<"$err" || { echo "FAIL: --parent without --pointer (rc=$rc): $err"; fail=1; }
+err=$(git_run --remove-parent= 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'needs a directory' <<<"$err" || { echo "FAIL: empty --remove-parent= accepted (rc=$rc): $err"; fail=1; }
+err=$(git_run --remove-parent "" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'needs a directory' <<<"$err" || { echo "FAIL: empty --remove-parent \"\" accepted (rc=$rc): $err"; fail=1; }
+err=$(git_run --remove-parent "$p1" --pointer --parent "$fake_home" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'REFUSED --pointer' <<<"$err" || { echo "FAIL: refused move (rc=$rc): $err"; fail=1; }
+grep -q "$vault_name:start" "$p1/AGENTS.md" && [ "$(records)" = "$p1" ] || { echo "FAIL: a refused move removed the old pointer"; fail=1; }
+printf '<!-- %s:start -->\nno end marker\n' "$vault_name" > "$p2/AGENTS.md"
+err=$(git_run --remove-parent "$p1" --remove-parent "$p2" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && grep -q 'without' <<<"$err" || { echo "FAIL: unterminated block in a later dir (rc=$rc): $err"; fail=1; }
+grep -q "$vault_name:start" "$p1/AGENTS.md" || { echo "FAIL: an unterminated block in a later dir did not stop the first removal"; fail=1; }
+rm "$p2/AGENTS.md"
+
+echo "--- --remove-parent strips a block appended through a CLAUDE.md link to another file"
+git_run --remove-parent "$p1" >/dev/null || { echo "FAIL: reset before CLAUDE.md link case exit $?"; fail=1; }
+printf '# shared claude\n' > "$fake_parent/shared-claude.md"
+ln -s "$fake_parent/shared-claude.md" "$p1/CLAUDE.md"
+git_run --pointer --parent "$p1" >/dev/null || { echo "FAIL: --pointer with a linked CLAUDE.md exit $?"; fail=1; }
+grep -q "$vault_name:start" "$fake_parent/shared-claude.md" || { echo "FAIL: block not appended through the CLAUDE.md link"; fail=1; }
+git_run --remove-parent "$p1" >/dev/null || { echo "FAIL: --remove-parent with a linked CLAUDE.md exit $?"; fail=1; }
+if grep -q "$vault_name:" "$fake_parent/shared-claude.md"; then echo "FAIL: block left in the CLAUDE.md link target"; fail=1; fi
+[ -L "$p1/CLAUDE.md" ] && grep -q 'shared claude' "$fake_parent/shared-claude.md" || { echo "FAIL: the operator's CLAUDE.md link or content changed"; fail=1; }
+rm -f "$p1/CLAUDE.md" "$fake_parent"/shared-claude.md*
+git_run --pointer --parent "$p1" >/dev/null
+
+echo "--- --remove-parent drops the record of a recorded dir that is gone"
+git_run --pointer --parent "$p2" >/dev/null
+mv "$p2" "$p2.moved"
+out=$(git_run --remove-parent "$p2"); rc=$?
+[ "$rc" -eq 0 ] && [ "$(records)" = "$p1" ] || { echo "FAIL: missing recorded dir not forgotten (rc=$rc): $(records) $out"; fail=1; }
+mv "$p2.moved" "$p2"
+git_run --remove-parent "$p2" >/dev/null || { echo "FAIL: --remove-parent of an unrecorded dir with a block exit $?"; fail=1; }
+[ ! -e "$p2/AGENTS.md" ] || { echo "FAIL: --remove-parent left the block in an unrecorded dir"; fail=1; }
+git_run --uninstall >/dev/null || { echo "FAIL: uninstall after --remove-parent tests exit $?"; fail=1; }
+[ "$(cat "$fake_home/.codex/AGENTS.md")" = "# my codex rules" ] || { echo "FAIL: codex AGENTS.md after --remove-parent tests: $(cat "$fake_home/.codex/AGENTS.md")"; fail=1; }
+rm -f "$fake_home/.codex/AGENTS.md.bak"
 rm -rf "$git_parent" "$p1" "$p2" "$repo_dir"
 
 echo "--- nothing left behind but the operator's own files"
 left=$(find "$fake_home" \( -type l -o -name '*.md' \) ! -path "$fake_home/.codex/AGENTS.md" ! -name '*.bak' | wc -l | tr -d ' ')
 [ "$left" -eq 0 ] || { echo "FAIL: $left install artifact(s) left under HOME"; find "$fake_home" -type l -o -name '*.md'; fail=1; }
 
-if [ "$fail" -eq 0 ]; then echo "PASS: install-discovery dry run/--skills/--check/--pointer/--pointer-codex/--uninstall"; else echo "FAIL: install-discovery"; fi
+if [ "$fail" -eq 0 ]; then echo "PASS: install-discovery dry run/--skills/--check/--pointer/--pointer-codex/--uninstall/--remove-parent"; else echo "FAIL: install-discovery"; fi
 exit "$fail"
