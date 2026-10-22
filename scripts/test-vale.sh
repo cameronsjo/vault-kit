@@ -45,7 +45,7 @@ expect "shared cache dir" 2 "$rc" "$err" "writable by others"
 echo "--- a cache made under umask 002 is created private and accepted"
 d=$(case_dir umask); rm -rf "$d/cache"; mkdir -p "$d/cache" && cp -R "$tmp/tampered/mirror/." "$d/mirror/" 2>/dev/null
 err=$( (umask 002; vale "$d" --vault-resolve) 2>&1 >/dev/null); rc=$?
-case "$(stat -f '%Lp' "$d/cache/vault-kit" 2>/dev/null || stat -c '%a' "$d/cache/vault-kit")" in
+case "$(stat -c '%a' "$d/cache/vault-kit" 2>/dev/null || stat -f '%Lp' "$d/cache/vault-kit")" in
   700) ;; *) echo "FAIL: umask 002 left $(ls -ld "$d/cache/vault-kit")"; fail=1 ;;
 esac
 grep -q 'writable by others' <<<"$err" && { echo "FAIL: refused a cache it created under umask 002: $err"; fail=1; }
