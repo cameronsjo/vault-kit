@@ -181,23 +181,37 @@ def record_pointer_dir(parent):
     print(f"recorded {parent} in git config {POINTER_DIRS_KEY} (for --uninstall)")
 
 
-def forget_pointer_dirs():
-    if is_git_checkout() and recorded_pointer_dirs():
-        subprocess.run(["git", "config", "--local", "--unset-all", POINTER_DIRS_KEY], cwd=root, check=True)
-        print(f"cleared git config {POINTER_DIRS_KEY}")
+def forget_pointer_dir(parent):
+    """Drop one recorded value; --fixed-value (git 2.30+) matches it literally, not as a regex."""
+    if is_git_checkout() and parent in recorded_pointer_dirs():
+        subprocess.run(["git", "config", "--local", "--fixed-value", "--unset-all", POINTER_DIRS_KEY,
+                        str(parent)], cwd=root, check=True)
+        print(f"forgot {parent} from git config {POINTER_DIRS_KEY}")
+
+
+def preflight_pointer(parent):
+    """Every refusal a write could hit, raised before any parent is written."""
+    for path in (parent / "AGENTS.md", parent / "CLAUDE.md"):
+        refuse_dangling(path)
+    target = parent / "AGENTS.md"
+    if target.exists():
+        split_block(target, target.read_text())
 
 
 def install_pointers(parents, allow_home):
-    """Refuse before any write if one parent is $HOME or /; then write each in order."""
+    """Refuse before any write if one parent would be refused; then record and write each."""
     for parent in parents:
         if at_home(parent) and not allow_home:
             print(f"REFUSED --pointer: the parent {parent} is $HOME or /, so the block would reach every "
                   f"session on this machine. Pass --parent <dir> for the directory holding your projects, "
                   f"or --pointer-at-home if that is what you want.", file=sys.stderr)
             return 2
+        preflight_pointer(parent)
     for parent in parents:
-        install_pointer(parent)
+        # Record first: a stale record is harmless (removal is idempotent), an unrecorded
+        # block is one a bare --uninstall can never find.
         record_pointer_dir(parent)
+        install_pointer(parent)
     return 0
 
 
@@ -443,10 +457,16 @@ def uninstall_pointers(parents):
         print("vault.toml names no vault, so no pointer block can be this vault's; left pointers alone")
         return 0
     seen, leftovers = set(), [CODEX_AGENTS]
-    for parent in parents + recorded_pointer_dirs():
+    recorded = recorded_pointer_dirs()
+    for parent in parents + recorded:
         if parent in seen:
             continue
         seen.add(parent)
+        if not parent.is_absolute() or not parent.is_dir():
+            # An unmounted volume or a moved directory: keep the record so a later run finds it.
+            print(f"left {parent} recorded in {POINTER_DIRS_KEY}: not an existing absolute directory; "
+                  f"remove the block there by hand, or re-run --uninstall once it is back")
+            continue
         target, claude = parent / "AGENTS.md", parent / "CLAUDE.md"
         created = remove_block(target) or set()
         if claude.is_symlink():
@@ -456,7 +476,7 @@ def uninstall_pointers(parents):
         else:
             remove_block(claude)
         leftovers += [target, claude]
-    forget_pointer_dirs()
+        forget_pointer_dir(parent)
     remove_block(CODEX_AGENTS)
     report_bak(leftovers)
     return 0

@@ -245,9 +245,25 @@ for dir in "$p1" "$p2" "$repo_dir"; do
   [ ! -e "$dir/AGENTS.md" ] && [ ! -L "$dir/CLAUDE.md" ] || { echo "FAIL: bare --uninstall left the pointer in $dir"; fail=1; }
 done
 git -C "$git_root" config --local --get-all vaultkit.pointerDir >/dev/null && { echo "FAIL: --uninstall left vaultkit.pointerDir set"; fail=1; }
+echo "--- a recorded dir that is gone keeps its record; the rest are removed"
+git_run --pointer --parent "$p1" --parent "$p2" >/dev/null
+mv "$p2" "$p2.moved"
+out=$(git_run --uninstall); rc=$?
+[ "$rc" -eq 0 ] && grep -qF "left $p2 recorded" <<<"$out" || { echo "FAIL: a missing recorded dir was not reported (rc=$rc): $out"; fail=1; }
+[ "$(git -C "$git_root" config --local --get-all vaultkit.pointerDir)" = "$p2" ] || { echo "FAIL: records after uninstall with a missing dir: $(git -C "$git_root" config --local --get-all vaultkit.pointerDir)"; fail=1; }
+[ ! -e "$p1/AGENTS.md" ] || { echo "FAIL: the present dir's block survived"; fail=1; }
+mv "$p2.moved" "$p2"
+git_run --uninstall >/dev/null
+[ ! -e "$p2/AGENTS.md" ] && ! git -C "$git_root" config --local --get-all vaultkit.pointerDir >/dev/null ||
+  { echo "FAIL: a re-run after the dir came back did not finish the uninstall"; fail=1; }
 echo "--- a refused parent stops every write"
 out=$(git_run --pointer --parent "$p1" --parent "$fake_home" 2>&1); rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$p1/AGENTS.md" ] || { echo "FAIL: a HOME parent did not stop the other writes (rc=$rc)"; fail=1; }
+ln -s "$fake_parent/no-such-file" "$p2/CLAUDE.md"
+out=$(git_run --pointer --parent "$p1" --parent "$p2" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$p1/AGENTS.md" ] && grep -q 'dangling symlink' <<<"$out" ||
+  { echo "FAIL: a dangling CLAUDE.md in the second parent did not stop the first write (rc=$rc): $out"; fail=1; }
+git -C "$git_root" config --local --get-all vaultkit.pointerDir >/dev/null && { echo "FAIL: a refused run recorded a parent"; fail=1; }
 rm -rf "$git_parent" "$p1" "$p2" "$repo_dir"
 
 echo "--- nothing left behind but the operator's own files"
