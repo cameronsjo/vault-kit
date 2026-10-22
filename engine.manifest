@@ -9,6 +9,8 @@ scripts/check-retrieval.py
 scripts/check-staged.py
 scripts/check-vault.py
 scripts/gitleaks
+scripts/pinnedbin.py
+scripts/vale
 scripts/index-vault.py
 scripts/install-discovery
 scripts/install-hooks
