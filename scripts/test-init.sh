@@ -9,7 +9,7 @@ tmp=$(cd "$(mktemp -d)" && pwd -P)  # resolved, so paths match what init-vault p
 trap 'rm -rf "$tmp"' EXIT
 fail=0
 name=acme-work
-title="Acme Work Vault"
+title="Acme's Work Vault"  # the apostrophe exercises the YAML quoting
 scope="platform and data teams' shared services"
 root_env=ACME_WORK_ROOT
 
@@ -70,6 +70,11 @@ grep -q '\[redaction\] deny' <<<"$out" || { echo "FAIL: no [redaction] deny remi
 grep -q 'CODEOWNERS' <<<"$out" || { echo "FAIL: no CODEOWNERS reminder"; fail=1; }
 check "$v" || { echo "FAIL: make check after init:"; cat "$tmp/check.log"; fail=1; }
 make --no-print-directory -C "$v" check-initialized >/dev/null 2>&1 || { echo "FAIL: make check-initialized after init"; fail=1; }
+grep -qx 'wrote README.md' <<<"$out" || { echo "FAIL: init did not report writing README.md"; fail=1; }
+[ "$(grep -m1 '^# ' "$v/README.md")" = "# $title" ] || { echo "FAIL: README heading is not the vault title: $(grep -m1 '^# ' "$v/README.md")"; fail=1; }
+for needle in "export $root_env=" "-c $name" "## If a secret lands in the vault" "shared knowledge for $scope."; do
+  grep -qF -- "$needle" "$v/README.md" || { echo "FAIL: instance README lacks: $needle"; fail=1; }
+done
 # Finder litters .DS_Store; .gitignore excludes it, so the name check never sees it.
 touch "$v/.DS_Store" "$v/wiki/.DS_Store"
 check "$v" || { echo "FAIL: make check fails on an ignored .DS_Store:"; cat "$tmp/check.log"; fail=1; }
@@ -133,6 +138,7 @@ init "$v" >/dev/null 2>&1; rc=$?
 
 echo "--- a run stopped after rendering resumes and completes; the deny table survives"
 v="$tmp/v2"; copy "$v" || exit 1
+page "$v/README.md" "vault-kit" "The template's own README."  # heading "# vault-kit": init replaces it
 python3 - "$v/vault.toml" <<'PY'
 import sys
 path = sys.argv[1]
@@ -150,14 +156,25 @@ grep -q 'resuming a partial init of acme-work; missing: log entry, indexes regen
   { echo "FAIL: resume did not name the missing pieces: $out"; fail=1; }
 check "$v" || { echo "FAIL: make check after resume:"; cat "$tmp/check.log"; fail=1; }
 [ "$(sed -n '/^\[redaction\]/,$p' "$v/vault.toml")" = "$before" ] || { echo "FAIL: [redaction] table changed"; fail=1; }
+[ "$(grep -m1 '^# ' "$v/README.md")" = "# $title" ] || { echo "FAIL: the template README was not replaced"; fail=1; }
 
-echo "--- a run stopped after the log entry resumes without a second entry"
+echo "--- a run stopped after the log entry resumes without a second entry; a custom README stays"
 v="$tmp/v3"; copy "$v" || exit 1
+# A custom README whose code fence quotes the template heading before its own heading.
+printf -- '---\ntype: Reference\ntitle: Our own README\ndescription: Written before init.\nstatus: draft\n---\n```text\n# vault-kit\n```\n# Our own README\n' > "$v/README.md"
+cp "$v/README.md" "$tmp/readme.keep"
 VAULT_KIT_INIT_FAIL_AFTER=log init "$v" >/dev/null 2>&1
 init "$v" >/dev/null 2>&1 || { echo "FAIL: resume after log exit $?"; fail=1; }
 count=$(grep -c "Initialize $name from vault-kit" "$v/wiki/log.md")
 [ "$count" -eq 1 ] || { echo "FAIL: $count Initialize log entries, want 1"; fail=1; }
+cmp -s "$v/README.md" "$tmp/readme.keep" || { echo "FAIL: init overwrote a README that was not the template's"; fail=1; }
 check "$v" || { echo "FAIL: make check after resume:"; cat "$tmp/check.log"; fail=1; }
+
+echo "--- the shipped README still starts with the heading init-vault replaces"
+if [ -z "${VAULT_KIT_TEST_INIT_NESTED:-}" ] && grep -q '^template = true' "$repo/vault.toml"; then
+  [ "$(grep -m1 '^# ' "$repo/README.md")" = "# vault-kit" ] ||
+    { echo "FAIL: the template README heading changed; update TEMPLATE_README_HEADING in scripts/init-vault"; fail=1; }
+fi
 
 echo "--- writers refuse a committed symlink; make check rejects one under wiki/"
 v="$tmp/v5"; copy "$v" || exit 1
@@ -180,6 +197,14 @@ out=$(init "$v" 2>&1); rc=$?
 cmp -s "$tmp/outside-log.md" "$tmp/outside-log.keep" || { echo "FAIL: init appended through a symlinked wiki/log.md"; fail=1; }
 [ ! -e "$v/skills" ] || { echo "FAIL: init rendered skills before refusing the symlinked log"; fail=1; }
 rm "$log"; mv "$tmp/outside-log.md" "$log"
+printf 'outside readme\n' > "$tmp/outside-readme.md"; cp "$tmp/outside-readme.md" "$tmp/outside-readme.keep"
+ln -s "$tmp/outside-readme.md" "$v/README.md"
+out=$(init "$v" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && grep -qF 'refusing to write through the symlink README.md' <<<"$out" ||
+  { echo "FAIL: init through a symlinked README.md exit $rc: $out"; fail=1; }
+cmp -s "$tmp/outside-readme.md" "$tmp/outside-readme.keep" || { echo "FAIL: init wrote through a symlinked README.md"; fail=1; }
+[ ! -e "$v/skills" ] || { echo "FAIL: init rendered skills before refusing the symlinked README.md"; fail=1; }
+rm "$v/README.md"
 mkdir -p "$tmp/skills-outside/$name-discover"; printf 'keep\n' > "$tmp/skills-outside/$name-discover/keep.txt"
 ln -s "$tmp/skills-outside" "$v/skills"
 out=$(init "$v" 2>&1); rc=$?

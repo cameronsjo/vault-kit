@@ -6,7 +6,9 @@
 
 Init does four things, in this order, and writes vault.toml last:
 
-  1. renders templates/skills/ into skills/<name>-discover/ and skills/<name>-maintain/
+  1. renders templates/skills/ into skills/<name>-discover/ and skills/<name>-maintain/,
+     and replaces the template's README.md with one for this vault (a README whose
+     first heading is not "# vault-kit" is left alone)
   2. appends "## [<today>] maintenance | Initialize <name> from vault-kit" to wiki/log.md
   3. regenerates every index.md
   4. writes vault.toml: template = false, name, title, scope, root_env (<NAME>_ROOT);
@@ -46,7 +48,48 @@ import tomllib
 ROOT = vaultconf.ROOT
 LOG = ROOT / "wiki" / "log.md"
 TOML = ROOT / "vault.toml"
+README = ROOT / "README.md"
+TEMPLATE_README_HEADING = "# vault-kit"
 FAIL_AFTER = os.environ.get("VAULT_KIT_INIT_FAIL_AFTER", "")
+
+# The instance README. It is vault-owned once written: init replaces only the template's
+# own README, and engine updates never touch it. Identity values cannot hold a backtick,
+# double quote, or brace (vaultconf.identity_errors), so plain substitution is safe here;
+# a single quote is allowed, so the frontmatter title doubles it for YAML.
+README_TEMPLATE = """\
+---
+type: Reference
+title: '{yaml_title}'
+description: 'What this vault holds, how to set it up on a machine, and what to do if a secret lands in it.'
+status: draft
+---
+# {title}
+
+This vault holds shared knowledge for {scope}. It is one Git repository that people and coding agents (Claude Code, Codex, Pi) read and maintain. Start with [`wiki/index.md`](wiki/index.md); [`AGENTS.md`](AGENTS.md) holds the rules every agent and person follows.
+
+It was built from [vault-kit](https://github.com/cameronsjo/vault-kit). The vault-kit README explains each part, the rule it enforces, and how to update the engine; this file covers only what this vault needs.
+
+## Set up on a machine
+
+Run these from the primary clone, not from a Git worktree.
+
+1. `make setup` creates `.venv/` and installs the Git hooks.
+2. Add `export {root_env}=<path to this clone>` to your shell profile. The skills read the vault's location only from that variable.
+3. `make retrieval-setup` builds the search index. Add `REFRESH_FLAGS=--lexical-only` to skip the model download.
+4. `scripts/install-discovery` previews what discovery writes; `scripts/install-discovery --pointer --skills` installs it.
+
+## Day to day
+
+1. Work on a branch in a Git worktree, never directly on `main`.
+2. Read `wiki/index.md` and the relevant pages. Search with `scripts/qmd search "terms" -c {name}`.
+3. Make the change. New source material goes in a new dated capture under `raw/`.
+4. Append an entry to `wiki/log.md`, run `make indexes`, stage the files, and commit. The hook checks the staged snapshot.
+5. Open a pull request. After it merges, run `make refresh`.
+
+## If a secret lands in the vault
+
+Rotate the credential first. Then clean up history. `raw/` and `wiki/log.md` cannot be rewritten under the hooks, so removing a value from them needs a deliberate history rewrite outside the hooks, agreed with whoever owns the repository. Treat any value that reached a pushed branch as exposed.
+"""
 
 
 class UsageError(Exception):
@@ -102,6 +145,31 @@ def write_skills(config):
     return changed
 
 
+def readme_is_template():
+    """True while README.md is missing or still the template's own (first heading # vault-kit)."""
+    if not README.exists() and not README.is_symlink():
+        return True
+    if not README.is_file():
+        raise SystemExit("init-vault: README.md exists but is not a regular file; move it aside and re-run")
+    fenced = False
+    for line in README.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and line.startswith("# "):
+            return line.strip() == TEMPLATE_README_HEADING
+    return False
+
+
+def write_readme(config):
+    """Replace the template's README with the instance one; return the change, if any."""
+    vaultconf.refuse_symlink(ROOT, README)
+    if not readme_is_template():
+        return []
+    text = README_TEMPLATE.format(yaml_title=config["title"].replace("'", "''"), **config)
+    vaultconf.safe_write(ROOT, README, text)
+    return ["wrote README.md"]
+
+
 def indexes_fresh(title):
     return subprocess.run([sys.executable, "scripts/index-vault.py", "--check", "--title", title],
                           cwd=ROOT, capture_output=True, text=True).returncode == 0
@@ -132,7 +200,7 @@ def append_log(name):
     text = LOG.read_text(encoding="utf-8")
     entry = (f"\n## [{date.today().isoformat()}] {log_heading(name)}\n\n"
              f"Actor: scripts/init-vault. Rendered `skills/{name}-discover/` and `skills/{name}-maintain/` "
-             "from `templates/skills/`, regenerated the indexes, and set the vault's identity in "
+             "from `templates/skills/`, wrote the instance `README.md` if the template's was still in place, regenerated the indexes, and set the vault's identity in "
              "`vault.toml`. Evidence: init-vault exit 0. Gaps: `[redaction] deny` in `vault.toml` and "
              "the owners in `.github/CODEOWNERS` are still placeholders.\n")
     vaultconf.safe_write(ROOT, LOG, text + ("" if text.endswith("\n") else "\n") + entry)
@@ -187,13 +255,14 @@ def init(args):
               f"re-run with --name {others[0]} to finish that run", file=sys.stderr)
         return 2
 
-    vaultconf.refuse_symlink(ROOT, LOG)  # before any step writes, so a refusal leaves no partial init
+    for path in (LOG, README):  # before any step writes, so a refusal leaves no partial init
+        vaultconf.refuse_symlink(ROOT, path)
     done = state(config)
     missing = [piece for piece, complete in done.items() if not complete]
     if len(missing) < len(done):
         print(f"resuming a partial init of {args.name}; missing: {', '.join(missing)}")
 
-    for line in write_skills(config):
+    for line in write_skills(config) + write_readme(config):
         print(line)
     checkpoint("render")
     if not done["log entry"]:
