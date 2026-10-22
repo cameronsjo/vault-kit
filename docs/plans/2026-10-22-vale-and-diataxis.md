@@ -150,12 +150,19 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] Add `scripts/pinnedbin.py` to `engine.manifest` first (the hook tests copy only manifest entries). Move gitleaks' platform detection, cache, download, archive verify, and binary re-verify into it. A failed import in `scripts/gitleaks` exits 2 with the install hint, never 1 ("leaks found"). Run `make test-hooks test-init` before any Vale work: they pass unchanged
-- [ ] Capture pins: for each platform, download from `https://github.com/vale-cli/vale/releases/download/v3.24.0/<archive>`, hash locally, match the line in `vale_3.24.0_checksums.txt` from the same tag, extract member `vale`, hash it. Paste the commands and their output into this step when ticking it. Read the 3.24.0 release notes for security fixes; record the result
-- [ ] Task 0's nits, in the shared module so both tools get them: refuse a cache dir not owned by this user or writable by group or others (N1); hash a `*_BIN` override against the pinned binary and print `not hash-verified` when it differs (N2); pass the URL as `curl --url <url>` and refuse a download base that is not `https://`, `http://`, or `file://` (N3). Tests for each
-- [ ] `scripts/vale` built on `ToolSpec`
-- [ ] `scripts/test-vale.sh`, each case with its own `XDG_CACHE_HOME`: a tampered archive from a local `VALE_DOWNLOAD_BASE` exits 2 and caches nothing; an archive without a `vale` member exits 2; a planted cached binary exits 2 and never runs; `VALE_BIN` stubs printing `vale version 3.24.0-evil` and `vale version 3.24.01` exit 2; an unreachable `VALE_DOWNLOAD_BASE` exits 3 with the `download failed` text; the first-run download prints the `downloading` line; a genuine resolve returns a path whose `--version` prints `vale version 3.24.0`. The genuine case prints `SKIP` when offline, unless `VAULT_KIT_REQUIRE_VALE=1`, then fails. Stage breaks of the archive check and the cache re-verify; confirm red
-- [ ] Commit: `feat(scripts): pinned vale wrapper on a verifier shared with gitleaks`
+- [x] Add `scripts/pinnedbin.py` to `engine.manifest` first (the hook tests copy only manifest entries). Move gitleaks' platform detection, cache, download, archive verify, and binary re-verify into it. A failed import in `scripts/gitleaks` exits 2 with the install hint, never 1 ("leaks found"). Run `make test-hooks test-init` before any Vale work: they pass unchanged
+- [x] Capture pins: for each platform, download from `https://github.com/vale-cli/vale/releases/download/v3.24.0/<archive>`, hash locally, match the line in `vale_3.24.0_checksums.txt` from the same tag, extract member `vale`, hash it. Paste the commands and their output into this step when ticking it. Read the 3.24.0 release notes for security fixes; record the result
+  Measured 2026-10-22 (archive hashed locally from the tag URL, matched to the published file; binary hashed inside it; `vale --version` → `vale version 3.24.0`):
+  ```text
+  vale_3.24.0_macOS_arm64.tar.gz  archive=87b513f2…1e44 MATCH  binary=c7905634…2f34
+  vale_3.24.0_macOS_64-bit.tar.gz archive=eeb39e86…9472 MATCH  binary=910902cf…83df
+  vale_3.24.0_Linux_64-bit.tar.gz archive=867534dd…b214 MATCH  binary=edfdfd7c…f78b
+  ```
+  Release notes: no security fixes; GitHub lists no security advisories for vale-cli/vale. New in 3.24.0: `vale test` (rule-embedded test cases), used in Task 3.
+- [x] Task 0's nits, in the shared module so both tools get them: refuse a cache dir not owned by this user or writable by group or others (N1); hash a `*_BIN` override against the pinned binary and print `not hash-verified` when it differs (N2); pass the URL as `curl --url <url>` and refuse a download base that is not `https://`, `http://`, or `file://` (N3). Tests for each
+- [x] `scripts/vale` built on `ToolSpec`
+- [x] `scripts/test-vale.sh`, each case with its own `XDG_CACHE_HOME`: a tampered archive from a local `VALE_DOWNLOAD_BASE` exits 2 and caches nothing; an archive without a `vale` member exits 2; a planted cached binary exits 2 and never runs; `VALE_BIN` stubs printing `vale version 3.24.0-evil` and `vale version 3.24.01` exit 2; an unreachable `VALE_DOWNLOAD_BASE` exits 3 with the `download failed` text; the first-run download prints the `downloading` line; a genuine resolve returns a path whose `--version` prints `vale version 3.24.0`. The genuine case prints `SKIP` when offline, unless `VAULT_KIT_REQUIRE_VALE=1`, then fails. Stage breaks of the archive check and the cache re-verify; confirm red
+- [x] Commit: `feat(scripts): pinned vale wrapper on a verifier shared with gitleaks`
 
 ### Task 3 — Rules, `scripts/prose`, and `make prose` (PR B)
 
@@ -172,15 +179,17 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] Add the two rules `writing.md` does not yet state, under Style: "Cut filler phrases (worth noting, it is important to note, in order to, basically)." and "Keep a sentence under about 35 words." Log entry. Every rule below now cites a `writing.md` line
-- [ ] Check Vale 3.24's config docs: a second config layer (record in the Minor concession and `## Deviations`), and whether frontmatter and `[[wikilinks]]` are skipped in Markdown (add `TokenIgnores` for wikilinks if not)
-- [ ] Rules, all `warning` except sentence length (`suggestion`): `unproven` (existence: "should work", "probably works", "seems to work", "hopefully works"; from "A README or a plan does not prove something works"; leaves "might" alone, since limitation sections need it), `filler`, `sentence-length` (occurrence, `scope: sentence`, max 35 tokens)
-- [ ] `.vale.ini`: `StylesPath = .vale/styles`, `MinAlertLevel = suggestion`, `[*.md] BasedOnStyles = vaultkit`. No `Vocab` (no rule reads one)
-- [ ] `scripts/prose`: default list from `git ls-files -- 'wiki/*.md' 'docs/*.md' README.md AGENTS.md` (git pathspec `*` crosses `/`), or `FILES=`; drop `raw/**` and `wiki/log.md` from either; empty list prints `0 files` and exits 0
-- [ ] `scripts/test-prose.sh`, all through `make prose` in one Vale run over a fixture vault: each rule's trigger page gives exactly its rule's record; a clean page with frontmatter and wikilinks gives none; `FILES=raw/x.md` and `FILES=wiki/log.md` give `0 files`; a page in `wiki/a/b/` deep is linted; `Do not store credentials.` gives none; a `VALE_DOWNLOAD_BASE` stub that makes `scripts/vale` exit 3 gives exit 0 with the skip line, and exit 2 under `VAULT_KIT_REQUIRE_VALE=1`; a tampered archive gives exit 2 either way. Stage a break per rule; confirm red. Measure warm runtime; budget under 10 s added to `make test`
-- [ ] Run `make prose` over vault-kit; record per-rule counts in `## Learnings`; when more than half of a rule's hits are wrong, narrow the rule and record before/after
-- [ ] CI step after the `base` step (`check.yml`): with a base, `make prose FILES="$(git diff --name-only --diff-filter=d "$BASE" HEAD -- '*.md')"`; when the base step sets `skip` (first push), plain `make prose` over the default list. Append the count line to `$GITHUB_STEP_SUMMARY`
-- [ ] Commit: `feat(prose): vaultkit Vale style and make prose`
+<!-- vale off -->
+- [x] Add the two rules `writing.md` does not yet state, under Style: "Cut filler phrases (worth noting, it is important to note, in order to, basically)." and "Keep a sentence under about 35 words." Log entry. Every rule below now cites a `writing.md` line
+- [x] Check Vale 3.24's config docs: a second config layer (record in the Minor concession and `## Deviations`), and whether frontmatter and `[[wikilinks]]` are skipped in Markdown (add `TokenIgnores` for wikilinks if not)
+- [x] Rules, all `warning` except sentence length (`suggestion`): `unproven` (existence: "should work", "probably works", "seems to work", "hopefully works"; from "A README or a plan does not prove something works"; leaves "might" alone, since limitation sections need it), `filler`, `sentence-length` (occurrence, `scope: sentence`, max 35 tokens)
+<!-- vale on -->
+- [x] `.vale.ini`: `StylesPath = .vale/styles`, `MinAlertLevel = suggestion`, `[*.md] BasedOnStyles = vaultkit`. No `Vocab` (no rule reads one)
+- [x] `scripts/prose`: default list from `git ls-files -- 'wiki/*.md' 'docs/*.md' README.md AGENTS.md` (git pathspec `*` crosses `/`), or `FILES=`; drop `raw/**` and `wiki/log.md` from either; empty list prints `0 files` and exits 0
+- [x] `scripts/test-prose.sh`, all through `make prose` in one Vale run over a fixture vault: each rule's trigger page gives exactly its rule's record; a clean page with frontmatter and wikilinks gives none; `FILES=raw/x.md` and `FILES=wiki/log.md` give `0 files`; a page in `wiki/a/b/` deep is linted; `Do not store credentials.` gives none; a `VALE_DOWNLOAD_BASE` stub that makes `scripts/vale` exit 3 gives exit 0 with the skip line, and exit 2 under `VAULT_KIT_REQUIRE_VALE=1`; a tampered archive gives exit 2 either way. Stage a break per rule; confirm red. Measure warm runtime; budget under 10 s added to `make test`
+- [x] Run `make prose` over vault-kit; record per-rule counts in `## Learnings`; when more than half of a rule's hits are wrong, narrow the rule and record before/after
+- [x] CI step after the `base` step (`check.yml`): with a base, `make prose FILES="$(git diff --name-only --diff-filter=d "$BASE" HEAD -- '*.md')"`; when the base step sets `skip` (first push), plain `make prose` over the default list. Append the count line to `$GITHUB_STEP_SUMMARY`
+- [x] Commit: `feat(prose): vaultkit Vale style and make prose`
 
 ### Task 4 — Tell the page writer, and classify by Diátaxis question (PR B)
 
@@ -192,11 +201,11 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] Step 2 table (`skill.md.tmpl:47-55`) gains a "question it answers" column on its existing rows: capability → look something up; journey → understand why (it explains how one outcome flows across parts; its steps live in runbooks); runbook → do a task; doctrine → understand why; system → look something up (the vault's own contract); raw → none (evidence, not a page); field report → understand why. Under the table, two sentences: "No page type answers learn-by-doing yet; write a runbook and say in its first line that it walks a newcomer through. A page that answers two questions becomes two linked pages."
-- [ ] Step 4 becomes `make indexes && make check && make prose FILES="<pages you wrote or edited>"`, then: "`make prose` prints Vale warnings from `wiki/system/writing.md`, one `path:line:col:rule:message` per line. They never block. Fix a warning in a page you changed unless the wording is quoted or required, and wrap a quoted passage in `<!-- vale off -->` / `<!-- vale on -->`; leave alerts in other pages. Exit 2 means Vale could not be verified: report the stderr line and continue." The ingest, query, and lint checklist lines that run `make check` gain the same `make prose` call. The tool-surface line (`skill.md.tmpl:14`) adds `prose` to its make targets
-- [ ] `knowledge-format.md` gets the same table for people, with a pointer to the skill as the source; `AGENTS.md:45` names "`make prose` (advisory)"
-- [ ] Verify in template mode: `make test-init` (it renders the skills; `make render-skills` refuses in the template) and `make check`; log entry
-- [ ] Commit: `feat(maintain): classify pages by Diátaxis question; run make prose on changed pages`
+- [x] Step 2 table (`skill.md.tmpl:47-55`) gains a "question it answers" column on its existing rows: capability → look something up; journey → understand why (it explains how one outcome flows across parts; its steps live in runbooks); runbook → do a task; doctrine → understand why; system → look something up (the vault's own contract); raw → none (evidence, not a page); field report → understand why. Under the table, two sentences: "No page type answers learn-by-doing yet; write a runbook and say in its first line that it walks a newcomer through. A page that answers two questions becomes two linked pages."
+- [x] Step 4 becomes `make indexes && make check && make prose FILES="<pages you wrote or edited>"`, then: "`make prose` prints Vale warnings from `wiki/system/writing.md`, one `path:line:col:rule:message` per line. They never block. Fix a warning in a page you changed unless the wording is quoted or required, and wrap a quoted passage in `<!-- vale off -->` / `<!-- vale on -->`; leave alerts in other pages. Exit 2 means Vale could not be verified: report the stderr line and continue." The ingest, query, and lint checklist lines that run `make check` gain the same `make prose` call. The tool-surface line (`skill.md.tmpl:14`) adds `prose` to its make targets
+- [x] `knowledge-format.md` gets the same table for people, with a pointer to the skill as the source; `AGENTS.md:45` names "`make prose` (advisory)"
+- [x] Verify in template mode: `make test-init` (it renders the skills; `make render-skills` refuses in the template) and `make check`; log entry
+- [x] Commit: `feat(maintain): classify pages by Diátaxis question; run make prose on changed pages`
 
 ### Task 5 — README ordered by question (PR B)
 
@@ -208,10 +217,10 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] Reorder the existing H2 sections, with no new heading levels and no renamed headings (anchors stay valid): Set up (Prerequisites, Quickstart, Fill a new vault); Daily use (Day to day, Updating, Teardown); Reference (Layout, Which harnesses read the pointer, Blueprint); Background (Multi-project use and trust, Sibling vault); License last. A five-line map under the title names each group and its sections in plain words. Cross-link `## Updating` and `### Engine update`
-- [ ] Verify nothing was lost: `diff <(git show HEAD:README.md | grep -v '^$' | sort) <(grep -v '^$' README.md | sort)` shows only the map lines and the cross-link. `grep -rn 'README.md#' scripts wiki templates AGENTS.md` finds no broken anchor
-- [ ] `make prose FILES=README.md`; fix only alerts in the new lines
-- [ ] Commit: `docs(readme): order sections by the question they answer`
+- [x] Reorder the existing H2 sections, with no new heading levels and no renamed headings (anchors stay valid): Set up (Prerequisites, Quickstart, Fill a new vault); Daily use (Day to day, Updating, Teardown); Reference (Layout, Which harnesses read the pointer, Blueprint); Background (Multi-project use and trust, Sibling vault); License last. A five-line map under the title names each group and its sections in plain words. Cross-link `## Updating` and `### Engine update`
+- [x] Verify nothing was lost: `diff <(git show HEAD:README.md | grep -v '^$' | sort) <(grep -v '^$' README.md | sort)` shows only the map lines and the cross-link. `grep -rn 'README.md#' scripts wiki templates AGENTS.md` finds no broken anchor
+- [x] `make prose FILES=README.md`; fix only alerts in the new lines
+- [x] Commit: `docs(readme): order sections by the question they answer`
 - [ ] Run the pre-PR review pass over PR B; its independent Opus security review must cover `scripts/pinnedbin.py`, `scripts/vale`, `scripts/prose`, `scripts/gitleaks`, `.vale.ini`, and `.vale/styles/vaultkit/`; fold findings; open PR B. Cameron merges; tag the merge commit `v0.3.0` and push the tag
 
 ### Task 6 — Roll out to artificer-made
@@ -235,4 +244,10 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 - **2026-10-22 — PR A polish: the allowlist parser replaced.** The built-in code review (10 findings) and the Opus security review (1 Important, 3 Nit, 2 leads) both found that `configparser` reads an indented line as a continuation while Vale's Go INI parser reads it as a new key or section, so `[formats]`, `Transform` (which runs `xsltproc`), or `[DEFAULT]` hidden under `TokenIgnores` passed. The plan's `configparser` interface is replaced by a strict line parser that accepts only the subset both read the same way. Also fixed: Vale config names `.vale` and `_vale`; `Vale.*` rule keys refused; case-insensitive path checks; non-UTF-8 text reported, not crashed on; symlinks and anything but `.vale/styles/<style>/<rule>.yml` refused under `.vale/`; the `check-vault` backstop covers ignored directories; native extension modules and files with NUL or terminal control bytes refused; one batched `git check-ignore` call. One staged break per safeguard (eleven) went red.
 - **2026-10-22 — PR A bounded security re-review.** The re-review confirmed the parser fix closes all six earlier findings and found one more parse difference: `str.splitlines()` splits on U+2028, U+0085 and other separators that go-ini keeps inside a line, so `StylesPath = .vale/styles<U+2028>#/../../scripts` passed and Vale would resolve it to `scripts/`. The parser now splits on newline only and refuses any other line break; `engine-update` also refuses any engine file that is not UTF-8 text free of C0, C1, bidi, and line-separator characters (the review's nit). Two staged breaks went red. The re-review loop stops here (bounded): the remaining class is closed at two layers.
 
+- **2026-10-22 — Tasks 2-5.** Task 2 kept gitleaks' "could not download" wording for both tools rather than a new `download failed` text; the integrity texts gained "Do not retry; report it." `scripts/test-vale.sh` was missing from `engine.manifest` until Task 3 (an updated vault's `make test` would have called a script it never got). Task 3: the rules carry Vale 3.24's embedded `tests:` and `vale test --coverage` runs in `test-prose.sh`; `scripts/prose` passes `--config` and `--no-global`, because Vale otherwise merges the user's global config and styles (`vale-cli/vale:internal/core/config.go`, `DefaultStylesPath`, at `v3.24.0`). Config layering, for the Minor concession: Vale merges the global user config and any file under `<StylesPath>/.vale-config/`; the first is per machine and now ignored, the second is refused by the allowlist (only `.vale/styles/<style>/<rule>.yml`), so a vault still has no second project layer. Vale lints frontmatter `title` and `description`; kept, since both are prose readers see in the indexes. Task 5 used one map of links under the intro instead of group headings, so no heading level changed.
+
 ## Learnings
+
+- **First `make prose` over vault-kit:** 61 alerts before marking, 48 after: `sentence-length` 48 (README 29, this plan 17, runbooks 3), `filler` 8 and `unproven` 4, and all 12 of those were quotations of the rules themselves, now marked with code spans or `vale off`. No rule needed narrowing.
+- **Cost:** `test-prose` and `test-vale` add about 2 s warm to `make test`; the first run downloads Vale once (about 15 MB).
+- **Two parsers, one file:** an allowlist over a config file has to parse it the way its consumer does. `configparser` and go-ini disagreed on indentation and on Unicode line separators, and each disagreement was a bypass; a strict line parser that accepts only the shared subset closed both.

@@ -6,7 +6,8 @@
 With no files it lints every tracked or new Markdown page under wiki/ and docs/, plus
 README.md and AGENTS.md. Named files are filtered the same way: raw/ (immutable provider
 captures) and wiki/log.md (append-only) are never linted, and a named file that does not
-exist is dropped with a note. Vale reads this vault's .vale.ini only (--config).
+exist is dropped with a note. Vale reads this vault's .vale.ini only (--config), never the
+user's global Vale config or styles (--no-global), so every machine gets the same result.
 
 Output: one `path:line:col:rule:message` record per alert, then `N alerts in M files`.
 
@@ -58,7 +59,7 @@ def main(argv):
     if not files:
         print("0 alerts in 0 files")
         return 0
-    command = [sys.executable, str(ROOT / "scripts" / "vale"), "--config", str(ROOT / ".vale.ini"),
+    command = [sys.executable, str(ROOT / "scripts" / "vale"), "--config", str(ROOT / ".vale.ini"), "--no-global",
                "--output=line", "--no-wrap", "--", *files]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if result.returncode == VALE_UNAVAILABLE:
