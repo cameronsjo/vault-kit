@@ -9,7 +9,8 @@
 #   v0.0.6  WIKI/log.md, v0.0.7 Agents.md: vault-owned paths in another case
 #   v0.0.8  .claude/settings.json: outside every engine location
 #   v0.0.9  Scripts/engine-fixture.txt: an engine location spelled in another case
-#   v0.0.10 Vale config inside the allowlist; v0.0.11-v0.0.20 each break one allowlist rule
+#   v0.0.10 Vale config inside the allowlist; v0.0.11-v0.0.20 and v0.0.26-v0.0.32 each break one
+#           allowlist rule; v0.0.21-v0.0.25 and v0.0.33-v0.0.35 ship files the review would not see
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 repo=$(pwd)
@@ -78,6 +79,21 @@ tag_manifest v0.0.22 'scripts/loose.pyc\n'
 tag_manifest v0.0.23 'scripts/.gitignore\n'
 tag_manifest v0.0.24 'scripts/.gitattributes\n'
 tag_manifest v0.0.25 'scripts/run.log\n'
+# Shapes where Python and Vale's Go INI parser would read .vale.ini differently, and other ways
+# around the Vale allowlist found in review.
+tag_ini v0.0.26 "$good_ini""TokenIgnores = x\n  [DEFAULT]\n  NLPEndpoint = https://example.invalid/\n  [formats]\n  md = xml\n"
+tag_ini v0.0.27 '[DEFAULT]\nStylesPath = scripts\n'
+tag_ini v0.0.28 'StylesPath = .vale/styles\n\n[*.md]\nTokenIgnores = """\nx\n"""\n'
+tag_ini v0.0.29 'StylesPath = .vale/styles\n\n[*.md]\nVale.Spelling = YES\n'
+tag_ini v0.0.30 'StylesPath = .vale/styles \\\n'
+printf '%b' "$good_ini" > .vale.ini && printf 'StylesPath = /etc\n' > scripts/_vale
+printf '<xsl:stylesheet/>\n' > .vale/styles/vaultkit/x.xsl && printf 'ELF\0binary\n' > scripts/mod.cpython-312-darwin.so
+printf '#!/bin/sh\necho ok\033[1A\033[2K\n' > scripts/redraw.sh && printf 'a\0b\n' > scripts/blob.txt && g add -Af
+tag_manifest v0.0.31 'scripts/_vale\n'
+tag_manifest v0.0.32 '.vale.ini\n.vale/styles/vaultkit/x.xsl\n'
+tag_manifest v0.0.33 'scripts/mod.cpython-312-darwin.so\n'
+tag_manifest v0.0.34 'scripts/redraw.sh\n'
+tag_manifest v0.0.35 'scripts/blob.txt\n'
 v1_commit=$(g rev-parse 'v0.0.1^{commit}')
 
 # --- fixture vault: a git repo with the real script and a stub `make check`
@@ -155,8 +171,10 @@ good=$(cat .vale.ini)
 echo "--- Vale config outside the allowlist is refused before anything is copied"
 for case in "v0.0.11:not an engine location" "v0.0.12:not an engine location" "v0.0.13:Vale reads this name" \
     "v0.0.14:top-level key packages" "v0.0.15:section \[formats\]" "v0.0.16:top-level key transform" \
-    "v0.0.17:StylesPath must be" "v0.0.18:StylesPath must be" "v0.0.19:not a parseable config" \
-    "v0.0.20:extends 'script'"; do
+    "v0.0.17:StylesPath must be" "v0.0.18:StylesPath must be" "v0.0.19:set twice" \
+    "v0.0.20:extends 'script'" "v0.0.26:is indented" "v0.0.27:\\[DEFAULT\\] is not allowed" \
+    "v0.0.28:quoted or multi-line value" "v0.0.29:vale.spelling is not a rule" "v0.0.30:line continuation" \
+    "v0.0.31:Vale reads this name" "v0.0.32:only rule files"; do
   tag=${case%%:*}; word=${case#*:}
   err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
   grep -qE "$word" <<<"$err" || { echo "FAIL: $tag refusal does not mention '$word': $err"; fail=1; }
@@ -167,12 +185,17 @@ done
   { echo "FAIL: a refused Vale path was written"; fail=1; }
 
 echo "--- files the review would not see are refused before anything is copied"
-for tag in v0.0.21 v0.0.22 v0.0.23 v0.0.24 v0.0.25; do
+for case in "v0.0.21:hidden from the review" "v0.0.22:hidden from the review" "v0.0.23:hidden from the review" \
+    "v0.0.24:hidden from the review" "v0.0.25:hidden from the review" "v0.0.33:hidden from the review" \
+    "v0.0.34:control bytes" "v0.0.35:control bytes"; do
+  tag=${case%%:*}; word=${case#*:}
   err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
-  grep -q 'hidden from the review' <<<"$err" || { echo "FAIL: $tag refusal does not say why: $err"; fail=1; }
+  grep -q "$word" <<<"$err" || { echo "FAIL: $tag refusal does not mention '$word': $err"; fail=1; }
 done
 [ ! -e scripts/__pycache__ ] && [ ! -e scripts/loose.pyc ] && [ ! -e scripts/.gitignore ] \
-  && [ ! -e scripts/.gitattributes ] && [ ! -e scripts/run.log ] || { echo "FAIL: a hidden file was written"; fail=1; }
+  && [ ! -e scripts/.gitattributes ] && [ ! -e scripts/run.log ] && [ ! -e scripts/mod.cpython-312-darwin.so ] \
+  && [ ! -e scripts/redraw.sh ] && [ ! -e scripts/blob.txt ] && [ ! -e scripts/_vale ] \
+  && [ ! -e .vale/styles/vaultkit/x.xsl ] || { echo "FAIL: a hidden file was written"; fail=1; }
 
 echo "--- this repository's own engine.manifest stays inside the engine locations"
 python3 - "$repo" <<'PY' || { echo "FAIL: engine.manifest lists a path engine-update would refuse"; fail=1; }

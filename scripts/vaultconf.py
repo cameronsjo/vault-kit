@@ -352,53 +352,92 @@ def checked_base(root, base):
 # before anyone reviews an engine update, so its contents are allowlisted rather than trusted.
 # engine-update runs vale_errors on a fetched ref before copying; check-vault runs it on the tree.
 VALE_INI = ".vale.ini"
-VALE_CONFIG_NAMES = {".vale.ini", "_vale.ini", "vale.ini"}  # names Vale finds walking up a tree
+# Names Vale loads as config when it walks up from a linted file. Only the root .vale.ini is allowed.
+VALE_CONFIG_NAMES = {".vale.ini", "_vale.ini", "vale.ini", ".vale", "_vale"}
 VALE_STYLES_PATH = ".vale/styles"
 VALE_ROOT_KEYS = {"stylespath", "minalertlevel"}
-VALE_SECTION_KEYS = {"basedonstyles", "tokenignores", "blockignores"}
+VALE_UNCHECKED_KEYS = {"tokenignores", "blockignores"}  # regex values; a line can hold nothing else
 VALE_LEVELS = {"suggestion", "warning", "error"}
 VALE_RULE_SETTINGS = VALE_LEVELS | {"yes", "no"}
+VALE_BUILTIN_STYLE = "vale"  # Vale.Spelling and friends; never enabled from here
 # Every rule kind except `script` (Tengo code) and `spelling` (reads dictionaries from disk).
 VALE_RULE_KINDS = {"existence", "substitution", "occurrence", "repetition", "consistency",
                    "conditional", "capitalization", "metric", "sequence"}
 VALE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-VALE_RULE_KEY_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*")
-VALE_ROOT_SECTION = "*root*"  # synthetic header: configparser rejects keys before a section
+VALE_SECTION_RE = re.compile(r"\[([^\[\]]+)\]")
+VALE_KEY_RE = re.compile(r"([A-Za-z0-9_.-]+)[ \t]*=[ \t]*(.*)")
+
+
+def vale_ini_lines(text):
+    """(section, key, value) for each setting, or a refusal.
+
+    Parsed line by line on purpose: Python's configparser and Vale's Go INI library disagree
+    (an indented line is a continuation to one and a new key or section to the other), so
+    only the subset both read the same way is accepted: flush-left `[section]` and
+    `key = value` lines, `#`/`;` comment lines, and blank lines. No continuations, no
+    multi-line or quoted-block values, no duplicate keys, no [DEFAULT].
+    """
+    settings, seen, section = [], set(), None
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line[0] in "#;":
+            continue
+        if line[0].isspace():
+            return None, f"line {number} is indented; Vale and this check would read it differently"
+        if line.rstrip().endswith("\\"):
+            return None, f"line {number} ends in a line continuation"
+        heading = VALE_SECTION_RE.fullmatch(line.rstrip())
+        if heading:
+            section = heading.group(1).strip()
+            if section.casefold() == "default":
+                return None, f"line {number}: [{section}] is not allowed"
+            continue
+        setting = VALE_KEY_RE.fullmatch(line.rstrip())
+        if not setting:
+            return None, f"line {number} is not a [section] or key = value line"
+        key, value = setting.group(1).casefold(), setting.group(2).strip()
+        if value.startswith(('"""', "`")):
+            return None, f"line {number}: a quoted or multi-line value is not allowed"
+        if (section, key) in seen:
+            return None, f"line {number}: {key} is set twice"
+        seen.add((section, key))
+        settings.append((section, key, value))
+    return settings, None
 
 
 def vale_ini_errors(text):
     """Why a .vale.ini falls outside the allowlist; empty when it is inside."""
-    import configparser
-    parser = configparser.RawConfigParser(strict=True, interpolation=None)
-    try:
-        parser.read_string(f"[{VALE_ROOT_SECTION}]\n{text}")
-    except configparser.Error as error:
-        return [f"{VALE_INI}: not a parseable config ({type(error).__name__})"]
+    settings, refusal = vale_ini_lines(text)
+    if refusal:
+        return [f"{VALE_INI}: {refusal}"]
     errors = []
-    for section in parser.sections():
-        for key, value in parser.items(section):
-            if section == VALE_ROOT_SECTION:
-                if key not in VALE_ROOT_KEYS:
-                    errors.append(f"{VALE_INI}: top-level key {key} is not allowed")
-                elif key == "stylespath" and value.strip() != VALE_STYLES_PATH:
-                    errors.append(f"{VALE_INI}: StylesPath must be {VALE_STYLES_PATH}, got {value.strip()!r}")
-                elif key == "minalertlevel" and value.strip().casefold() not in VALE_LEVELS:
-                    errors.append(f"{VALE_INI}: MinAlertLevel {value.strip()!r} is not a level")
-            elif not section.startswith("*"):
-                errors.append(f"{VALE_INI}: section [{section}] is not a file glob")
-            elif key == "basedonstyles":
-                names = [name.strip() for name in value.split(",") if name.strip()]
-                bad = [name for name in names if not VALE_NAME_RE.fullmatch(name)]
-                if bad:
-                    errors.append(f"{VALE_INI}: [{section}] BasedOnStyles names a style outside "
-                                  f"{VALE_STYLES_PATH}: {', '.join(bad)}")
-            elif key in VALE_SECTION_KEYS:
-                continue
-            elif VALE_RULE_KEY_RE.fullmatch(key):
-                if value.strip().casefold() not in VALE_RULE_SETTINGS:
-                    errors.append(f"{VALE_INI}: [{section}] {key} = {value.strip()!r} is not a level or YES/NO")
-            else:
-                errors.append(f"{VALE_INI}: [{section}] key {key} is not allowed")
+    for section, key, value in settings:
+        if section is None:
+            if key not in VALE_ROOT_KEYS:
+                errors.append(f"{VALE_INI}: top-level key {key} is not allowed")
+            elif key == "stylespath" and value != VALE_STYLES_PATH:
+                errors.append(f"{VALE_INI}: StylesPath must be {VALE_STYLES_PATH}, got {value!r}")
+            elif key == "minalertlevel" and value.casefold() not in VALE_LEVELS:
+                errors.append(f"{VALE_INI}: MinAlertLevel {value!r} is not a level")
+        elif not section.startswith("*"):
+            errors.append(f"{VALE_INI}: section [{section}] is not a file glob")
+        elif key == "basedonstyles":
+            names = [name.strip() for name in value.split(",") if name.strip()]
+            bad = [name for name in names
+                   if not VALE_NAME_RE.fullmatch(name) or name.casefold() == VALE_BUILTIN_STYLE]
+            if bad:
+                errors.append(f"{VALE_INI}: [{section}] BasedOnStyles names a style outside "
+                              f"{VALE_STYLES_PATH}: {', '.join(bad)}")
+        elif key in VALE_UNCHECKED_KEYS:
+            continue
+        elif "." in key:
+            style, _, rule = key.partition(".")
+            if (style == VALE_BUILTIN_STYLE or not VALE_NAME_RE.fullmatch(style)
+                    or not VALE_NAME_RE.fullmatch(rule)):
+                errors.append(f"{VALE_INI}: [{section}] {key} is not a rule of a style in {VALE_STYLES_PATH}")
+            elif value.casefold() not in VALE_RULE_SETTINGS:
+                errors.append(f"{VALE_INI}: [{section}] {key} = {value!r} is not a level or YES/NO")
+        else:
+            errors.append(f"{VALE_INI}: [{section}] key {key} is not allowed")
     return errors
 
 
@@ -418,18 +457,39 @@ def vale_rule_errors(rel, text):
 
 
 def vale_errors(base, rels):
-    """Allowlist errors for the Vale config among rels (paths relative to base)."""
+    """Allowlist errors for the Vale config among rels (paths relative to base).
+
+    Paths compare case-insensitively, because on a case-insensitive disk .Vale/Styles is
+    the directory Vale reads as .vale/styles.
+    """
     errors = []
-    styles = Path(VALE_STYLES_PATH).parts
+    styles = tuple(part.casefold() for part in Path(VALE_STYLES_PATH).parts)
     for rel in rels:
         rel = Path(rel)
-        if rel.name.casefold() in VALE_CONFIG_NAMES:
-            if rel != Path(VALE_INI):
-                errors.append(f"{rel}: Vale reads this name as config; only the root {VALE_INI} is allowed")
-            else:
-                errors.extend(vale_ini_errors((base / rel).read_text(encoding="utf-8")))
-        elif rel.parts[:len(styles)] == styles and rel.suffix in (".yml", ".yaml"):
-            errors.extend(vale_rule_errors(rel, (base / rel).read_text(encoding="utf-8")))
+        folded = tuple(part.casefold() for part in rel.parts)
+        is_config = rel.name.casefold() in VALE_CONFIG_NAMES
+        under_vale = folded[:1] == styles[:1]
+        if is_config and folded != (VALE_INI,):
+            errors.append(f"{rel}: Vale reads this name as config; only the root {VALE_INI} is allowed")
+            continue
+        if not (is_config or under_vale):
+            continue
+        if (base / rel).is_symlink():
+            errors.append(f"{rel}: a symlink in Vale config; Vale would load its target unchecked")
+            continue
+        is_rule = (len(rel.parts) == len(styles) + 2 and folded[:len(styles)] == styles
+                   and VALE_NAME_RE.fullmatch(rel.parts[-2]) and rel.suffix == ".yml"
+                   and VALE_NAME_RE.fullmatch(rel.stem))
+        if under_vale and not is_rule:
+            errors.append(f"{rel}: only rule files ({VALE_STYLES_PATH}/<style>/<rule>.yml, lowercase) "
+                          "are allowed under .vale/")
+            continue
+        try:
+            text = (base / rel).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"{rel}: not UTF-8 text")
+            continue
+        errors.extend(vale_ini_errors(text) if is_config else vale_rule_errors(rel, text))
     return errors
 
 
