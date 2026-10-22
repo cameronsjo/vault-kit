@@ -54,8 +54,8 @@ FAIL_AFTER = os.environ.get("VAULT_KIT_INIT_FAIL_AFTER", "")
 
 # The instance README. It is vault-owned once written: init replaces only the template's
 # own README, and engine updates never touch it. Identity values cannot hold a backtick,
-# quote, or brace (vaultconf.identity_errors), so plain substitution is safe here; the
-# frontmatter title doubles single quotes for YAML.
+# double quote, or brace (vaultconf.identity_errors), so plain substitution is safe here;
+# a single quote is allowed, so the frontmatter title doubles it for YAML.
 README_TEMPLATE = """\
 ---
 type: Reference
@@ -147,10 +147,15 @@ def write_skills(config):
 
 def readme_is_template():
     """True while README.md is missing or still the template's own (first heading # vault-kit)."""
-    if not README.exists():
+    if not README.exists() and not README.is_symlink():
         return True
+    if not README.is_file():
+        raise SystemExit("init-vault: README.md exists but is not a regular file; move it aside and re-run")
+    fenced = False
     for line in README.read_text(encoding="utf-8").splitlines():
-        if line.startswith("# "):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and line.startswith("# "):
             return line.strip() == TEMPLATE_README_HEADING
     return False
 
