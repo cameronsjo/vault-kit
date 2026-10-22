@@ -446,11 +446,28 @@ def vale_ini_errors(text):
     return errors
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """safe_load that refuses a repeated mapping key, which PyYAML would silently resolve to
+    the last value (so `extends: script` then `extends: existence` would read as existence)."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}",
+                                                        key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def vale_rule_errors(rel, text):
     """Why a Vale rule file falls outside the allowlist; empty when it is inside."""
     try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError:
+        data = yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506  (a SafeLoader subclass)
+    except yaml.YAMLError as error:
+        if "duplicate key" in str(error):
+            return [f"{rel}: a key is set twice; Vale and this check would read it differently"]
         return [f"{rel}: not valid YAML"]
     if not isinstance(data, dict):
         return [f"{rel}: a Vale rule must be a mapping"]

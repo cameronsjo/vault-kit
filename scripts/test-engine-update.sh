@@ -112,6 +112,9 @@ printf '%b' "$good_ini" > .vale.ini && g add -A
 tag_manifest v0.0.38 'scripts/bidi.sh\n'
 tag_manifest v0.0.39 'scripts/csi.sh\n'
 tag_manifest v0.0.40 'scripts/latin1.sh\n'
+# A ref whose .gitattributes selects a filter driver the developer has configured.
+printf '* filter=fixture-smudge\n' > .gitattributes && printf 'engine v4\n' > scripts/engine-fixture.txt && g add -Af
+tag_manifest v0.0.41 'scripts/engine-fixture.txt\n'
 v1_commit=$(g rev-parse 'v0.0.1^{commit}')
 
 # --- fixture vault: a git repo with the real script and a stub `make check`
@@ -216,6 +219,15 @@ done
   && [ ! -e scripts/.gitattributes ] && [ ! -e scripts/run.log ] && [ ! -e scripts/mod.cpython-312-darwin.so ] \
   && [ ! -e scripts/redraw.sh ] && [ ! -e scripts/blob.txt ] && [ ! -e scripts/_vale ] \
   && [ ! -e .vale/styles/vaultkit/x.xsl ] || { echo "FAIL: a hidden file was written"; fail=1; }
+
+echo "--- no filter driver the ref's .gitattributes selects runs during the fetch"
+marker="$tmp/smudge-ran"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=filter.fixture-smudge.smudge GIT_CONFIG_VALUE_0="sh -c 'touch $marker; cat'" \
+  run --ref v0.0.41 --source "$src" >/dev/null 2>&1; rc=$?
+expect "v0.0.41 exit" 0 "$rc"
+[ ! -e "$marker" ] || { echo "FAIL: a filter driver selected by the fetched .gitattributes ran"; fail=1; }
+expect "v0.0.41 wrote the raw blob" "engine v4" "$(cat scripts/engine-fixture.txt)"
+g checkout -q -- scripts/engine-fixture.txt
 
 echo "--- this repository's own engine.manifest stays inside the engine locations"
 python3 - "$repo" <<'PY' || { echo "FAIL: engine.manifest lists a path engine-update would refuse"; fail=1; }
