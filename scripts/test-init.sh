@@ -70,6 +70,11 @@ grep -q '\[redaction\] deny' <<<"$out" || { echo "FAIL: no [redaction] deny remi
 grep -q 'CODEOWNERS' <<<"$out" || { echo "FAIL: no CODEOWNERS reminder"; fail=1; }
 check "$v" || { echo "FAIL: make check after init:"; cat "$tmp/check.log"; fail=1; }
 make --no-print-directory -C "$v" check-initialized >/dev/null 2>&1 || { echo "FAIL: make check-initialized after init"; fail=1; }
+grep -qx 'wrote README.md' <<<"$out" || { echo "FAIL: init did not report writing README.md"; fail=1; }
+[ "$(grep -m1 '^# ' "$v/README.md")" = "# $title" ] || { echo "FAIL: README heading is not the vault title: $(grep -m1 '^# ' "$v/README.md")"; fail=1; }
+for needle in "export $root_env=" "-c $name" "## If a secret lands in the vault" "shared knowledge for $scope."; do
+  grep -qF -- "$needle" "$v/README.md" || { echo "FAIL: instance README lacks: $needle"; fail=1; }
+done
 # Finder litters .DS_Store; .gitignore excludes it, so the name check never sees it.
 touch "$v/.DS_Store" "$v/wiki/.DS_Store"
 check "$v" || { echo "FAIL: make check fails on an ignored .DS_Store:"; cat "$tmp/check.log"; fail=1; }
@@ -133,6 +138,7 @@ init "$v" >/dev/null 2>&1; rc=$?
 
 echo "--- a run stopped after rendering resumes and completes; the deny table survives"
 v="$tmp/v2"; copy "$v" || exit 1
+page "$v/README.md" "vault-kit" "The template's own README."  # heading "# vault-kit": init replaces it
 python3 - "$v/vault.toml" <<'PY'
 import sys
 path = sys.argv[1]
@@ -150,13 +156,16 @@ grep -q 'resuming a partial init of acme-work; missing: log entry, indexes regen
   { echo "FAIL: resume did not name the missing pieces: $out"; fail=1; }
 check "$v" || { echo "FAIL: make check after resume:"; cat "$tmp/check.log"; fail=1; }
 [ "$(sed -n '/^\[redaction\]/,$p' "$v/vault.toml")" = "$before" ] || { echo "FAIL: [redaction] table changed"; fail=1; }
+[ "$(grep -m1 '^# ' "$v/README.md")" = "# $title" ] || { echo "FAIL: the template README was not replaced"; fail=1; }
 
-echo "--- a run stopped after the log entry resumes without a second entry"
+echo "--- a run stopped after the log entry resumes without a second entry; a custom README stays"
 v="$tmp/v3"; copy "$v" || exit 1
+page "$v/README.md" "Our own README" "Written before init."; cp "$v/README.md" "$tmp/readme.keep"
 VAULT_KIT_INIT_FAIL_AFTER=log init "$v" >/dev/null 2>&1
 init "$v" >/dev/null 2>&1 || { echo "FAIL: resume after log exit $?"; fail=1; }
 count=$(grep -c "Initialize $name from vault-kit" "$v/wiki/log.md")
 [ "$count" -eq 1 ] || { echo "FAIL: $count Initialize log entries, want 1"; fail=1; }
+cmp -s "$v/README.md" "$tmp/readme.keep" || { echo "FAIL: init overwrote a README that was not the template's"; fail=1; }
 check "$v" || { echo "FAIL: make check after resume:"; cat "$tmp/check.log"; fail=1; }
 
 echo "--- writers refuse a committed symlink; make check rejects one under wiki/"

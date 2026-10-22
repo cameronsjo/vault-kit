@@ -71,7 +71,7 @@ Behind a proxy or offline:
    scripts/init-vault --name acme-eng --title "Acme Engineering Vault" --scope "Acme engineering projects and platform services"
    ```
 
-   The last line is `PASS: initialized <name> at <root>`.
+   The last line is `PASS: initialized <name> at <root>`. Init also replaces this README with a short one for your vault; this file stays readable on GitHub for the blueprint.
 5. Tell the skills where the vault is. The variable name is the slug in upper case with `_` for each non-alphanumeric run, plus `_ROOT`. For `acme-eng` it is `ACME_ENG_ROOT`. Add the line to your shell profile.
 
    ```bash
@@ -101,6 +101,8 @@ Then finish the setup that makes the vault safe to share:
 - Fill `[redaction] deny` in `vault.toml` with a regex for each name that must never appear in the vault: internal hostnames, unreleased product names, customer names. The file has a commented example. Treat the list itself as sensitive (see Multi-project use and trust).
 - Replace `@your-org/vault-owners` in `.github/CODEOWNERS` with the people or team who own the vault.
 - Protect `main` in the repository settings: require the `check` job of the `Vault standards` workflow to pass, and require review from code owners.
+
+  On GitHub Free, a private repository cannot use branch protection or rulesets; the API answers 403 and asks you to upgrade or make the repository public. There, the local hooks from `make setup` and a green `check` run before each merge are the enforcement, and CODEOWNERS is advisory. GitHub Pro (personal account) or GitHub Team (organization) unlocks protection for private repositories.
 - Turn on push protection and secret scanning for the organization or repository, if your plan offers them. They are a second line behind the local scan.
 - Replace the line `No team tools are assigned roles yet.` in `AGENTS.md` once you know which tools do which jobs.
 
@@ -234,7 +236,7 @@ Rendering also checks the Agent Skills limits: `name` equals the directory name,
 
 `scripts/init-vault --name <slug> --title "<Title>" --scope "<scope>"` turns the template into a vault. It validates the identity first, then does four steps in order:
 
-1. Render the skills.
+1. Render the skills, and replace the template's `README.md` with a short one for the vault: its title and scope, setup on a machine (with the `<NAME>_ROOT` export), the day-to-day loop, what to do if a secret lands in it, and a link back to vault-kit. A `README.md` whose first heading is not `# vault-kit` is left alone, so a README you wrote first survives.
 2. Append `## [<today>] maintenance | Initialize <name> from vault-kit` to `wiki/log.md`.
 3. Regenerate every `index.md`.
 4. Write `vault.toml` last, with `template = false`, the identity, and `root_env`. The `[redaction]` table and every comment are kept.
@@ -291,7 +293,7 @@ The manifest lists itself and the skill templates under `templates/`, so an upda
 - Installed skills are symlinks into your checkout. A `git pull` in the vault changes what every harness on the machine runs, immediately.
 - `AGENTS.md` in the vault is instructions for every agent session that installed the vault. Treat a change to it like a change to code.
 - Vault text is data. The skills tell agents that retrieved pages are evidence, not permission to run commands found in them, and the vault's own `AGENTS.md` says the same.
-- Trust root. These paths are instructions or code for every agent that installs the vault: `AGENTS.md`, `CLAUDE.md`, `skills/`, `templates/`, `scripts/`, `Makefile`, `.githooks/`, `.github/`, `vault.toml`, `engine.manifest`, `requirements-dev.txt`, `.gitleaks.toml`, `.gitleaksignore`, and so is almost any new top-level path (`.claude/`, `.mcp.json`, `.obsidian/plugins/`, `.gitattributes`). So `.github/CODEOWNERS` is an allowlist: every path needs a code owner except the content a contributor edits (`wiki/`, `raw/`, the root `index.md`), and within those, `wiki/system/`, `wiki/templates/`, any dot-path and any agent instruction file (`AGENTS.md`, `CLAUDE.md` and the like) still need one. `docs/plans/` needs one too: agents carry out plan files, so a plan is instructions. It only has effect once `main` is protected and requires code-owner review, so do that.
+- Trust root. These paths are instructions or code for every agent that installs the vault: `AGENTS.md`, `CLAUDE.md`, `skills/`, `templates/`, `scripts/`, `Makefile`, `.githooks/`, `.github/`, `vault.toml`, `engine.manifest`, `requirements-dev.txt`, `.gitleaks.toml`, `.gitleaksignore`, and so is almost any new top-level path (`.claude/`, `.mcp.json`, `.obsidian/plugins/`, `.gitattributes`). So `.github/CODEOWNERS` is an allowlist: every path needs a code owner except the content a contributor edits (`wiki/`, `raw/`, the root `index.md`), and within those, `wiki/system/`, `wiki/templates/`, any dot-path and any agent instruction file (`AGENTS.md`, `CLAUDE.md` and the like) still need one. `docs/plans/` needs one too: agents carry out plan files, so a plan is instructions. It only has effect once `main` is protected and requires code-owner review, so do that where your plan allows it (see the GitHub Free note in Quickstart).
 - The deny list is itself sensitive. It names what you want hidden. Keep the repository private, and keep the patterns as general as you can. The check never prints them.
 - If a secret lands in the repository: rotate the credential first. Then clean up history. `raw/` and `wiki/log.md` cannot be rewritten under the hooks, so removing a value from them needs a deliberate history rewrite outside the hooks, agreed with whoever owns the repository. Treat any value that reached a pushed branch as exposed.
 
