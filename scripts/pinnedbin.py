@@ -51,7 +51,7 @@ class ToolSpec:
     version_args: tuple       # argv after the binary that prints its version
     version_output: str       # that command's exact stdout, stripped
     install_hint: str
-    allow_unpinned_env: str = None  # set to 1 to run a *_BIN of another version, with a warning
+    allow_unpinned_env: str | None = None  # set to 1 to run a *_BIN of another version, with a warning
     closed_note: str = ""     # appended to a version refusal (the secret scan fails closed)
 
     def env(self, suffix):
@@ -91,14 +91,30 @@ def fetch(spec, url):
     raise Refusal(UNAVAILABLE, f"could not download {url} ({first}). {spec.install_hint}")
 
 
-def refuse_shared(directory):
-    """A cache directory someone else can write could swap the binary between hash and exec."""
-    info = directory.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise Refusal(INTEGRITY, f"cache path {directory} is not a plain directory. {INTEGRITY_NOTE}")
-    if info.st_uid != os.getuid() or info.st_mode & 0o022:
-        raise Refusal(INTEGRITY, f"cache directory {directory} is not owned by you or is writable by "
-                                 f"others. {INTEGRITY_NOTE}")
+def make_private_dirs(directory):
+    """Create each missing level of directory as 0700, whatever the umask (mkdir's mode is masked
+    by it, so a umask of 002 would leave group-writable directories behind)."""
+    missing = []
+    for level in [directory, *directory.parents]:
+        if level.exists() or level.is_symlink():
+            break
+        missing.append(level)
+    for level in reversed(missing):
+        level.mkdir(mode=0o700)
+        os.chmod(level, 0o700)
+
+
+def refuse_shared(path, kind="directory"):
+    """A cache path someone else can write could swap the binary between hash and exec."""
+    info = path.lstat()
+    plain = stat.S_ISDIR(info.st_mode) if kind == "directory" else stat.S_ISREG(info.st_mode)
+    if stat.S_ISLNK(info.st_mode) or not plain:
+        raise Refusal(INTEGRITY, f"cache path {path} is not a plain {kind}. {INTEGRITY_NOTE}")
+    if info.st_uid != os.getuid():
+        raise Refusal(INTEGRITY, f"cache {kind} {path} is not owned by you. {INTEGRITY_NOTE}")
+    if info.st_mode & 0o022:
+        raise Refusal(INTEGRITY, f"cache {kind} {path} is writable by others, so another user could "
+                                 f"swap the binary. Run `chmod go-w {path}` if you made it, then retry.")
 
 
 def download(spec, key, binary):
@@ -150,7 +166,7 @@ def resolve_override(spec, override):
                 f"{spec.version}.", fix, spec.closed_note])))
         print(f"{spec.name} wrapper: WARNING: {allow}=1: running {variable}={override}, which reports "
               f"version {found or '(none)'}, not the pinned {spec.version}. Its result is not the "
-              f"pinned {spec.name}'s result.", file=sys.stderr)
+              "pinned scan's result.", file=sys.stderr)
         return override
     pin = spec.pins.get(platform_key())
     if pin and sha256(Path(override).read_bytes()) != pin["binary"]:
@@ -166,11 +182,12 @@ def resolve(spec):
     key = target(spec)
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "vault-kit"
     binary = cache / f"{spec.name}-{spec.version}" / spec.name
-    binary.parent.mkdir(parents=True, exist_ok=True)
+    make_private_dirs(binary.parent)
     refuse_shared(cache)
     refuse_shared(binary.parent)
     if not binary.is_file():
         download(spec, key, binary)
+    refuse_shared(binary, kind="file")
     found = sha256(binary.read_bytes())
     if found != spec.pins[key]["binary"]:
         raise Refusal(INTEGRITY, f"checksum mismatch for cached {binary}: expected "
@@ -186,6 +203,10 @@ def main(spec, argv, unavailable_exit):
     except Refusal as refusal:
         print(f"{spec.name} wrapper: {refusal}", file=sys.stderr)
         raise SystemExit(unavailable_exit if refusal.kind == UNAVAILABLE else 2)
+    except Exception as error:  # noqa: BLE001  exit 2, never 1: callers read 1 as findings
+        print(f"{spec.name} wrapper: could not resolve {spec.name} ({type(error).__name__}: {error}). "
+              f"Nothing was run.", file=sys.stderr)
+        raise SystemExit(2)
     if argv == ["--vault-resolve"]:
         print(path)
         raise SystemExit(0)

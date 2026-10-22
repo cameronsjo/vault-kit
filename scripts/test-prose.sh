@@ -47,7 +47,7 @@ else
     grep -qx '0 alerts in 0 files' <<<"$out" || { echo "FAIL: FILES=$never was linted: $out"; fail=1; }
   done
   out=$(prose FILES=wiki/missing.md 2>&1)
-  grep -q 'wiki/missing.md does not exist' <<<"$out" && grep -qx '0 alerts in 0 files' <<<"$out" ||
+  grep -q 'wiki/missing.md is not a file' <<<"$out" && grep -qx '0 alerts in 0 files' <<<"$out" ||
     { echo "FAIL: a missing file was not dropped with a note: $out"; fail=1; }
 
   echo "--- every vaultkit rule fires in its own test cases (vale test --coverage)"
@@ -57,12 +57,18 @@ else
 fi
 
 echo "--- an unavailable Vale is skipped, unless VAULT_KIT_REQUIRE_VALE=1; tampering always fails"
+# scripts/prose directly, not make: make turns every failure into exit 2, hiding prose's own code.
+# The require flag is cleared unless a case sets it: CI sets it for the whole job.
 mkdir -p "$tmp/cache" "$tmp/mirror" && chmod 755 "$tmp/cache"
-offline() { XDG_CACHE_HOME="$tmp/cache" VALE_DOWNLOAD_BASE="file://$tmp/$1" prose "${@:2}"; }
+offline() { # mirror dir, require flag (0/1)
+  (cd "$vault" && env -u VALE_BIN -u VAULT_KIT_REQUIRE_VALE ${2:+VAULT_KIT_REQUIRE_VALE=$2} XDG_CACHE_HOME="$tmp/cache" \
+    VALE_DOWNLOAD_BASE="file://$tmp/$1" python3 scripts/prose wiki/filler.md)
+}
 err=$(offline nowhere 2>&1 >/dev/null); rc=$?
 [ "$rc" -eq 0 ] && grep -q 'skipped, Vale is unavailable' <<<"$err" || { echo "FAIL: unavailable Vale (rc=$rc): $err"; fail=1; }
-err=$(VAULT_KIT_REQUIRE_VALE=1 offline nowhere 2>&1 >/dev/null); rc=$?
-[ "$rc" -ne 0 ] || { echo "FAIL: unavailable Vale passed under VAULT_KIT_REQUIRE_VALE=1"; fail=1; }
+err=$(offline nowhere 1 2>&1 >/dev/null); rc=$?
+[ "$rc" -eq 2 ] && grep -q 'skipped, Vale is unavailable' <<<"$err" ||
+  { echo "FAIL: unavailable Vale under VAULT_KIT_REQUIRE_VALE=1 (rc=$rc, want 2): $err"; fail=1; }
 archive=$(cd "$repo" && python3 -c 'import sys; sys.path.insert(0, "scripts")
 import importlib.machinery as m, importlib.util as u
 l = m.SourceFileLoader("vale", "scripts/vale"); mod = u.module_from_spec(u.spec_from_loader("vale", l)); l.exec_module(mod)
@@ -70,8 +76,13 @@ import pinnedbin; print(mod.ARCHIVES.get(pinnedbin.platform_key(), ""))')
 if [ -n "$archive" ]; then
   printf 'not the release\n' > "$tmp/mirror/$archive"
   err=$(offline mirror 2>&1 >/dev/null); rc=$?
-  [ "$rc" -ne 0 ] && grep -q 'checksum mismatch for downloaded' <<<"$err" ||
-    { echo "FAIL: a tampered Vale download did not fail make prose (rc=$rc): $err"; fail=1; }
+  [ "$rc" -eq 2 ] && grep -q 'checksum mismatch for downloaded' <<<"$err" ||
+    { echo "FAIL: a tampered Vale download (rc=$rc, want 2): $err"; fail=1; }
+  echo "--- a crash in the wrapper is a failure, never a clean run"
+  printf 'not a directory\n' > "$tmp/cache-file"
+  err=$(cd "$vault" && env -u VALE_BIN XDG_CACHE_HOME="$tmp/cache-file" python3 scripts/prose wiki/filler.md 2>&1 >/dev/null); rc=$?
+  [ "$rc" -eq 2 ] && grep -q 'nothing was checked\|Nothing was run' <<<"$err" ||
+    { echo "FAIL: an unusable cache did not fail prose with exit 2 (rc=$rc): $err"; fail=1; }
 fi
 
 [ "$fail" -eq 0 ] && echo "PASS: make prose" || { echo "FAIL: make prose"; exit 1; }

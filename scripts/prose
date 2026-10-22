@@ -6,7 +6,7 @@
 With no files it lints every tracked or new Markdown page under wiki/ and docs/, plus
 README.md and AGENTS.md. Named files are filtered the same way: raw/ (immutable provider
 captures) and wiki/log.md (append-only) are never linted, and a named file that does not
-exist is dropped with a note. Vale reads this vault's .vale.ini only (--config), never the
+exist, or resolves outside the vault, is dropped with a note. Vale reads this vault's .vale.ini only (--config), never the
 user's global Vale config or styles (--no-global), so every machine gets the same result.
 
 Output: one `path:line:col:rule:message` record per alert, then `N alerts in M files`.
@@ -44,11 +44,14 @@ def lintable(names):
     kept = []
     for name in names:
         rel = Path(os.path.relpath(Path(name).resolve(), ROOT.resolve()))
+        if rel.parts[:1] == ("..",):
+            print(f"prose: note: {name} resolves outside this vault; skipped", file=sys.stderr)
+            continue
         folded = tuple(part.casefold() for part in rel.parts)
         if folded[:1] in [(d,) for d in NEVER_LINTED_DIRS] or "/".join(folded) in NEVER_LINTED_FILES:
             continue
         if not (ROOT / rel).is_file():
-            print(f"prose: note: {name} does not exist; skipped", file=sys.stderr)
+            print(f"prose: note: {name} is not a file; skipped", file=sys.stderr)
             continue
         kept.append(str(rel))
     return list(dict.fromkeys(kept))
@@ -62,14 +65,15 @@ def main(argv):
     command = [sys.executable, str(ROOT / "scripts" / "vale"), "--config", str(ROOT / ".vale.ini"), "--no-global",
                "--output=line", "--no-wrap", "--", *files]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    sys.stderr.write(result.stderr)  # the wrapper's download line, notices, and refusals
     if result.returncode == VALE_UNAVAILABLE:
         reason = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "no reason given"
         print(f"prose: skipped, Vale is unavailable: {reason}", file=sys.stderr)
         return 2 if os.environ.get(REQUIRE_ENV) == "1" else 0
     records = [line for line in result.stdout.splitlines() if line.strip()]
     sys.stdout.write("".join(f"{line}\n" for line in records))
-    if result.returncode not in (0, 1):
-        sys.stderr.write(result.stderr)
+    # Vale exits 1 only for error-level alerts; exit 1 with none printed is a crash, not a result.
+    if result.returncode not in (0, 1) or (result.returncode == 1 and not records):
         print(f"prose: Vale failed (exit {result.returncode}); nothing was checked", file=sys.stderr)
         return 2
     print(f"{len(records)} alerts in {len(files)} files")

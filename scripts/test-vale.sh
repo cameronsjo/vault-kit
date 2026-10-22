@@ -42,6 +42,25 @@ d=$(case_dir shared); mkdir -p "$d/cache/vault-kit/vale-3.24.0" && chmod 777 "$d
 err=$(vale "$d" --vault-resolve 2>&1 >/dev/null); rc=$?
 expect "shared cache dir" 2 "$rc" "$err" "writable by others"
 
+echo "--- a cache made under umask 002 is created private and accepted"
+d=$(case_dir umask); rm -rf "$d/cache"; mkdir -p "$d/cache" && cp -R "$tmp/tampered/mirror/." "$d/mirror/" 2>/dev/null
+err=$( (umask 002; vale "$d" --vault-resolve) 2>&1 >/dev/null); rc=$?
+case "$(stat -f '%Lp' "$d/cache/vault-kit" 2>/dev/null || stat -c '%a' "$d/cache/vault-kit")" in
+  700) ;; *) echo "FAIL: umask 002 left $(ls -ld "$d/cache/vault-kit")"; fail=1 ;;
+esac
+grep -q 'writable by others' <<<"$err" && { echo "FAIL: refused a cache it created under umask 002: $err"; fail=1; }
+
+echo "--- a cached binary others can write is refused, with the fix"
+d=$(case_dir binmode); mkdir -p "$d/cache/vault-kit/vale-3.24.0" && chmod 700 "$d/cache/vault-kit" "$d/cache/vault-kit/vale-3.24.0"
+printf 'x\n' > "$d/cache/vault-kit/vale-3.24.0/vale" && chmod 777 "$d/cache/vault-kit/vale-3.24.0/vale"
+err=$(vale "$d" --version 2>&1 >/dev/null); rc=$?
+expect "writable cached binary" 2 "$rc" "$err" "chmod go-w"
+
+echo "--- an unusable cache (a crash, not a refusal) exits 2, never 1"
+d=$(case_dir crash); printf 'not a directory\n' > "$d/cache-file"
+err=$(env -u VALE_BIN XDG_CACHE_HOME="$d/cache-file" python3 scripts/vale --vault-resolve 2>&1 >/dev/null); rc=$?
+expect "unusable cache" 2 "$rc" "$err" "could not resolve vale"
+
 echo "--- an unreachable mirror exits 3 (unavailable), not 2"
 d=$(case_dir unreachable); rmdir "$d/mirror"
 err=$(vale "$d" --vault-resolve 2>&1 >/dev/null); rc=$?
@@ -89,6 +108,37 @@ except pinnedbin.Refusal as refusal:
         print(f"FAIL: missing member refused as {refusal.kind}: {refusal}"); raise SystemExit(1)
 else:
     print("FAIL: an archive with no vale member was accepted"); raise SystemExit(1)
+# A verified archive whose vale member has the wrong hash.
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    info = tarfile.TarInfo("vale"); data = b"#!/bin/sh\necho impostor\n"; info.size = len(data); info.mode = 0o755
+    tar.addfile(info, io.BytesIO(data))
+open(f"{tmp}/member/mirror/b.tar.gz", "wb").write(buf.getvalue())
+os.makedirs(f"{tmp}/inner/cache", mode=0o755)
+os.environ["XDG_CACHE_HOME"] = f"{tmp}/inner/cache"
+spec2 = pinnedbin.ToolSpec(name="vale", version="1", release_url=f"file://{tmp}/member/mirror",
+                           archives={key: "b.tar.gz"},
+                           pins={key: {"archive": hashlib.sha256(buf.getvalue()).hexdigest(), "binary": "0" * 64}},
+                           env_prefix="TESTVALE", version_args=("--version",), version_output="x", install_hint="")
+try:
+    pinnedbin.resolve(spec2)
+except pinnedbin.Refusal as refusal:
+    if refusal.kind != pinnedbin.INTEGRITY or "checksum mismatch for vale inside" not in str(refusal):
+        print(f"FAIL: wrong-hash member refused as {refusal.kind}: {refusal}"); raise SystemExit(1)
+else:
+    print("FAIL: a member with the wrong hash was accepted"); raise SystemExit(1)
+if os.path.exists(f"{tmp}/inner/cache/vault-kit/vale-1/vale"):
+    print("FAIL: a member with the wrong hash was cached"); raise SystemExit(1)
+# No pin for this platform: unavailable, not integrity.
+spec3 = pinnedbin.ToolSpec(name="vale", version="2", release_url="file:///nowhere", archives={}, pins={},
+                           env_prefix="TESTVALE", version_args=("--version",), version_output="x", install_hint="")
+try:
+    pinnedbin.resolve(spec3)
+except pinnedbin.Refusal as refusal:
+    if refusal.kind != pinnedbin.UNAVAILABLE or "no pinned vale build" not in str(refusal):
+        print(f"FAIL: no-pin platform refused as {refusal.kind}: {refusal}"); raise SystemExit(1)
+else:
+    print("FAIL: a platform with no pin resolved"); raise SystemExit(1)
 PY
 
 echo "--- the genuine release resolves and runs"

@@ -156,20 +156,20 @@ jobs:
           set -o pipefail
           # Warnings never fail the run; an unverifiable or unavailable Vale does
           # (VAULT_KIT_REQUIRE_VALE). The page writer reads the alerts first (the maintain
-          # skill runs make prose); this summary is the backstop.
+          # skill runs make prose); this summary is the backstop. scripts/prose directly, not
+          # make prose: a NUL-separated array keeps any page name intact.
+          files=()
           if [ -n "${SKIP}" ]; then
-            files=""; scope="every page (no base: ${SKIP})"
+            scope="every page (no base: ${SKIP})"
           else
-            # Page names are kebab-case (make check), so the unquoted list splits only between names.
-            files=$(git diff --name-only -z --diff-filter=d "${BASE}" HEAD -- '*.md' | tr '\0' ' ')
+            mapfile -d '' files < <(git diff --name-only -z --diff-filter=d "${BASE}" HEAD -- '*.md')
             scope="pages changed since ${BASE:0:12}"
-            if [ -z "${files// /}" ]; then
+            if [ "${#files[@]}" -eq 0 ]; then
               echo "Prose check: no Markdown changed since ${BASE:0:12}." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
           fi
-          # shellcheck disable=SC2086  # see the kebab-case note above
-          python3 scripts/prose ${files} | tee "$RUNNER_TEMP/prose.out"
+          python3 scripts/prose "${files[@]}" | tee "$RUNNER_TEMP/prose.out"
           echo "Prose check over ${scope}: $(tail -n 1 "$RUNNER_TEMP/prose.out")" >> "$GITHUB_STEP_SUMMARY"
       - name: Test suites
         env:

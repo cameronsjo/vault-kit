@@ -90,7 +90,7 @@ make indexes && make check && make prose FILES="<pages you wrote or edited>"
 
 `make indexes` regenerates every `index.md` (never hand-edit one). `make check` runs the validator, the index freshness check, the rendered-skill check, and the secret scan; fix every line it prints. `wiki/runbooks/standards-checks.md` explains each check and what it cannot see.
 
-`make prose` prints Vale warnings drawn from `wiki/system/writing.md`, one `path:line:col:rule:message` per line, then a count. They never block. Fix a warning in a page you changed unless the flagged wording is quoted or required; wrap a quoted passage in `<!-- vale off -->` and `<!-- vale on -->`. Leave alerts in pages you did not touch. Exit 2 means Vale could not be verified: report its stderr line and continue.
+`make prose` prints Vale warnings drawn from `wiki/system/writing.md`, one `path:line:col:rule:message` per line, then a count. They never block. Fix a warning in a page you changed unless the flagged wording is quoted or required; wrap a quoted passage in `<!-- vale off -->` and `<!-- vale on -->`. Leave alerts in pages you did not touch. A line starting `vale wrapper:` or `prose:` means the prose check itself could not run (Vale unavailable or unverified): report that line and continue. Any other failure in this step comes from `make indexes` or `make check`; fix it.
 
 ## Step 5: log, commit, PR
 
