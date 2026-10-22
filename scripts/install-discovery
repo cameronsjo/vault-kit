@@ -11,14 +11,19 @@ Codex AGENTS.md, and each harness skill dir with its link names) and write nothi
                      Claude, Codex, and Pi skill dirs; no other skill dir unless named
   --include <dir>    also link skills/<dir>/ (repeatable); a skill a contributor adds is
                      installed for every session on the machine only when you name it
-  --parent <dir>     the directory whose AGENTS.md gets the pointer (default: the
-                     directory holding this vault); its projects inherit the block
+  --parent <dir>     a directory whose AGENTS.md gets the pointer (default: the
+                     directory holding this vault); its projects inherit the block.
+                     Repeatable, for covered projects that do not share one parent.
+                     In a git checkout of the vault, each pointer directory is recorded
+                     in the local git config (vaultkit.pointerDir), so --uninstall finds
+                     every one without repeating the flags
   --pointer-at-home  allow --pointer when the parent is $HOME or /, where the block
                      reaches every session on the machine
   --check            verify every expected skill link resolves here and each linked
                      skill was rendered for this checkout (exit 1 otherwise)
   --uninstall        remove what the flags above wrote: skill links into this checkout,
-                     the block in the parent AGENTS.md and CLAUDE.md, the CLAUDE.md link
+                     the block in each parent's AGENTS.md and CLAUDE.md (the --parent
+                     dirs or the default, plus every recorded one), the CLAUDE.md link
                      and AGENTS.md this script created, and the Codex block; reports any
                      .bak it leaves. Exit 1 if an expected link was left in place
 
@@ -52,6 +57,7 @@ start, end = f"<!-- {NAME}:start -->", f"<!-- {NAME}:end -->"
 CREATED = {"agents": f"<!-- {NAME}: created this AGENTS.md -->",
            "claude": f"<!-- {NAME}: created the CLAUDE.md link -->"}
 GENERATED_NOTICE = "by scripts/init-vault --render-skills; do not edit"
+POINTER_DIRS_KEY = "vaultkit.pointerDir"  # local git config, one value per pointer directory
 
 
 def make_block(created=()):
@@ -146,12 +152,74 @@ def at_home(parent):
     return parent.resolve() in (home.resolve(), Path("/"))
 
 
-def install_pointer(parent, allow_home):
-    if at_home(parent) and not allow_home:
-        print(f"REFUSED --pointer: the parent {parent} is $HOME or /, so the block would reach every "
-              f"session on this machine. Pass --parent <dir> for the directory holding your projects, "
-              f"or --pointer-at-home if that is what you want.", file=sys.stderr)
-        return 2
+def is_git_checkout():
+    """True when root is its own git checkout; a non-git root (tests) records nothing."""
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=root,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    return Path(top).resolve() == root.resolve()
+
+
+def recorded_pointer_dirs():
+    """Pointer directories an earlier --pointer recorded in this checkout's git config."""
+    if not is_git_checkout():
+        return []
+    result = subprocess.run(["git", "config", "--local", "--get-all", POINTER_DIRS_KEY],
+                            cwd=root, capture_output=True, text=True)
+    if result.returncode not in (0, 1):  # 1: the key is unset
+        raise SystemExit(f"git config --get-all {POINTER_DIRS_KEY} failed: {result.stderr.strip()}")
+    return [Path(line) for line in result.stdout.splitlines() if line]
+
+
+def record_pointer_dir(parent):
+    if not is_git_checkout() or parent in recorded_pointer_dirs():
+        return
+    subprocess.run(["git", "config", "--local", "--add", POINTER_DIRS_KEY, str(parent)],
+                   cwd=root, check=True)
+    print(f"recorded {parent} in git config {POINTER_DIRS_KEY} (for --uninstall)")
+
+
+def forget_pointer_dir(parent):
+    """Drop one recorded value; --fixed-value (git 2.30+) matches it literally, not as a regex."""
+    if is_git_checkout() and parent in recorded_pointer_dirs():
+        subprocess.run(["git", "config", "--local", "--fixed-value", "--unset-all", POINTER_DIRS_KEY,
+                        str(parent)], cwd=root, check=True)
+        print(f"forgot {parent} from git config {POINTER_DIRS_KEY}")
+
+
+def preflight_pointer(parent):
+    """Every refusal a write could hit, raised before any parent is written."""
+    for path in (parent / "AGENTS.md", parent / "CLAUDE.md"):
+        refuse_dangling(path)
+    target = parent / "AGENTS.md"
+    if target.exists():
+        split_block(target, target.read_text())
+
+
+def install_pointers(parents, allow_home):
+    """Refuse before any write if one parent would be refused; then record and write each."""
+    for parent in parents:
+        if at_home(parent) and not allow_home:
+            print(f"REFUSED --pointer: the parent {parent} is $HOME or /, so the block would reach every "
+                  f"session on this machine. Pass --parent <dir> for the directory holding your projects, "
+                  f"or --pointer-at-home if that is what you want.", file=sys.stderr)
+            return 2
+        preflight_pointer(parent)
+    for parent in parents:
+        # Record first: a stale record is harmless (removal is idempotent), an unrecorded
+        # block is one a bare --uninstall can never find.
+        record_pointer_dir(parent)
+        install_pointer(parent)
+    return 0
+
+
+def install_pointer(parent):
+    if (parent / ".git").exists():
+        print(f"warning: {parent} is itself a git repository, so the block shows up there as an "
+              f"uncommitted change to AGENTS.md (or CLAUDE.md); commit it there deliberately, or "
+              f"pick a directory above it")
     target = parent / "AGENTS.md"
     claude = parent / "CLAUDE.md"
     refuse_dangling(target)
@@ -175,7 +243,6 @@ def install_pointer(parent, allow_home):
             print(f"wrote {claude} (block appended)")
             claude_outcome = "block appended"
     print(f"pointer: {target} {outcome}; {claude} {claude_outcome}")
-    return 0
 
 
 def install_pointer_codex():
@@ -385,35 +452,51 @@ def report_bak(paths):
             print(f"left {bak}: the content before the first install; delete it once you no longer need it")
 
 
-def uninstall_pointers(parent):
+def uninstall_pointers(parents):
     if not NAME:
         print("vault.toml names no vault, so no pointer block can be this vault's; left pointers alone")
         return 0
-    target, claude = parent / "AGENTS.md", parent / "CLAUDE.md"
-    created = remove_block(target) or set()
-    if claude.is_symlink():
-        if "claude" in created and os.readlink(claude) == "AGENTS.md":
-            claude.unlink()
-            print(f"removed {claude} (symlink created by install-discovery)")
-    else:
-        remove_block(claude)
+    seen, leftovers = set(), [CODEX_AGENTS]
+    recorded = recorded_pointer_dirs()
+    for parent in parents + recorded:
+        if parent in seen:
+            continue
+        seen.add(parent)
+        if not parent.is_absolute() or not parent.is_dir():
+            # An unmounted volume or a moved directory: keep the record so a later run finds it.
+            print(f"left {parent} recorded in {POINTER_DIRS_KEY}: not an existing absolute directory; "
+                  f"remove the block there by hand, or re-run --uninstall once it is back")
+            continue
+        target, claude = parent / "AGENTS.md", parent / "CLAUDE.md"
+        created = remove_block(target) or set()
+        if claude.is_symlink():
+            if "claude" in created and os.readlink(claude) == "AGENTS.md":
+                claude.unlink()
+                print(f"removed {claude} (symlink created by install-discovery)")
+        else:
+            remove_block(claude)
+        leftovers += [target, claude]
+        forget_pointer_dir(parent)
     remove_block(CODEX_AGENTS)
-    report_bak([target, claude, CODEX_AGENTS])
+    report_bak(leftovers)
     return 0
 
 
-def describe(parent):
+def describe(parents):
     """Print every path a write flag would touch; write nothing."""
     names = selected_names() if NAME else []
     print(f"vault: {root} (name {NAME or '<unset: template>'}, root env ${ROOT_ENV or '<unset: template>'})")
     if not NAME:
         print(f"--pointer, --pointer-codex, --skills: refused until the vault is initialized; {vaultconf.INIT_HINT}")
-    for label, path in (("--pointer", parent / "AGENTS.md"), ("--pointer", parent / "CLAUDE.md"),
-                        ("--pointer-codex", CODEX_AGENTS)):
+    targets = [("--pointer", parent / leaf) for parent in parents for leaf in ("AGENTS.md", "CLAUDE.md")]
+    for label, path in targets + [("--pointer-codex", CODEX_AGENTS)]:
         state = "exists" if path.exists() or path.is_symlink() else "would be created"
         print(f"{label}: {path} ({state})")
-    if at_home(parent):
-        print(f"--pointer: refused without --pointer-at-home, because {parent} is $HOME or /")
+    for parent in parents:
+        if at_home(parent):
+            print(f"--pointer: refused without --pointer-at-home, because {parent} is $HOME or /")
+        if (parent / ".git").exists():
+            print(f"--pointer: {parent} is itself a git repository; the block would be an uncommitted change there")
     for harness, directory in HARNESS_SKILL_DIRS.items():
         if not directory.is_dir():
             print(f"--skills: {harness}: {directory} does not exist; skipped")
@@ -431,7 +514,7 @@ def describe(parent):
 def parse(argv):
     known = {"--pointer", "--pointer-codex", "--pointer-at-home", "--skills", "--check",
              "--uninstall", "-h", "--help"}
-    flags, parent, unknown = set(), None, []
+    flags, parents, unknown = set(), [], []
     args = iter(argv)
     for arg in args:
         if arg == "--include":
@@ -441,22 +524,24 @@ def parse(argv):
             else:
                 INCLUDE.append(value)
         elif arg == "--parent":
-            parent = next(args, None)
-            if parent is None:
+            value = next(args, None)
+            if value is None:
                 unknown.append("--parent (needs a directory)")
+            else:
+                parents.append(value)
         elif arg.startswith("--parent="):
-            parent = arg.split("=", 1)[1]
+            parents.append(arg.split("=", 1)[1])
         elif arg in known:
             flags.add(arg)
         else:
             unknown.append(arg)
-    return flags, parent, unknown
+    return flags, parents, unknown
 
 
 def main(argv):
     if os.name != "posix":
         raise SystemExit("install-discovery supports POSIX hosts only (symlinks, ~/.claude layout).")
-    flags, parent_arg, unknown = parse(argv)
+    flags, parent_args, unknown = parse(argv)
     if unknown:
         print(f"unknown flag(s): {' '.join(sorted(unknown))}\n", file=sys.stderr)
         print(__doc__.strip(), file=sys.stderr)
@@ -468,15 +553,17 @@ def main(argv):
     if "--uninstall" in flags and flags & writes:
         print("--uninstall cannot be combined with --pointer, --pointer-codex, or --skills", file=sys.stderr)
         return 2
-    if parent_arg is not None:
+    parents = []
+    for parent_arg in parent_args:
         parent = Path(parent_arg).expanduser().resolve()
         if not parent.is_dir():
             print(f"--parent {parent_arg}: not a directory", file=sys.stderr)
             return 2
-    else:
-        parent = root.parent
+        if parent not in parents:
+            parents.append(parent)
+    parents = parents or [root.parent]
     if not flags & (writes | {"--check", "--uninstall"}):
-        return describe(parent)
+        return describe(parents)
     if flags & writes:
         message = vaultconf.check_initialized(root)
         if message:
@@ -487,9 +574,9 @@ def main(argv):
     status = 0
     if "--uninstall" in flags:
         status |= uninstall_skills()
-        status |= uninstall_pointers(parent)
+        status |= uninstall_pointers(parents)
     if "--pointer" in flags:
-        result = install_pointer(parent, "--pointer-at-home" in flags)
+        result = install_pointers(parents, "--pointer-at-home" in flags)
         if result:
             return result
     if "--pointer-codex" in flags:
