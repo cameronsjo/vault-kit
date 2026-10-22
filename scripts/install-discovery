@@ -26,9 +26,15 @@ Codex AGENTS.md, and each harness skill dir with its link names) and write nothi
                      dirs or the default, plus every recorded one), the CLAUDE.md link
                      and AGENTS.md this script created, and the Codex block; reports any
                      .bak it leaves. Exit 1 if an expected link was left in place
+  --remove-parent <dir>
+                     remove only this directory's block, the files this script created
+                     there, and its vaultkit.pointerDir record (repeatable); skill links,
+                     the Codex block, and other pointers stay. Combine with --pointer
+                     --parent <new> to move a pointer in one run. A recorded dir that no
+                     longer exists has just its record dropped
 
-The write flags need an initialized vault (vault.toml names it); the dry run and
---uninstall do not. Every write prints the path it wrote and is idempotent. Run it from the primary
+The write flags and --remove-parent need an initialized vault (vault.toml names it);
+the dry run and --uninstall do not. Every write prints the path it wrote and is idempotent. Run it from the primary
 checkout: a worktree would anchor the pointer and the links at a path that disappears
 when the worktree is removed.
 """
@@ -198,8 +204,8 @@ def preflight_pointer(parent):
         split_block(target, target.read_text())
 
 
-def install_pointers(parents, allow_home):
-    """Refuse before any write if one parent would be refused; then record and write each."""
+def refuse_pointers(parents, allow_home):
+    """Return 2 (or raise) if any parent would be refused; called before any write or removal."""
     for parent in parents:
         if at_home(parent) and not allow_home:
             print(f"REFUSED --pointer: the parent {parent} is $HOME or /, so the block would reach every "
@@ -207,6 +213,14 @@ def install_pointers(parents, allow_home):
                   f"or --pointer-at-home if that is what you want.", file=sys.stderr)
             return 2
         preflight_pointer(parent)
+    return 0
+
+
+def install_pointers(parents, allow_home):
+    """Refuse before any write if one parent would be refused; then record and write each."""
+    refused = refuse_pointers(parents, allow_home)
+    if refused:
+        return refused
     for parent in parents:
         # Record first: a stale record is harmless (removal is idempotent), an unrecorded
         # block is one a bare --uninstall can never find.
@@ -452,6 +466,20 @@ def report_bak(paths):
             print(f"left {bak}: the content before the first install; delete it once you no longer need it")
 
 
+def remove_pointer(parent):
+    """Strip one parent's block and the files this script created there, then drop its record."""
+    target, claude = parent / "AGENTS.md", parent / "CLAUDE.md"
+    created = remove_block(target) or set()
+    if claude.is_symlink() and "claude" in created and os.readlink(claude) == "AGENTS.md":
+        claude.unlink()
+        print(f"removed {claude} (symlink created by install-discovery)")
+    elif not (claude.is_symlink() and claude.resolve() == target.resolve()):
+        # A real file, or a link to some other file: install appended the block there.
+        remove_block(claude)
+    forget_pointer_dir(parent)
+    return [target, claude]
+
+
 def uninstall_pointers(parents):
     if not NAME:
         print("vault.toml names no vault, so no pointer block can be this vault's; left pointers alone")
@@ -467,17 +495,32 @@ def uninstall_pointers(parents):
             print(f"left {parent} recorded in {POINTER_DIRS_KEY}: not an existing absolute directory; "
                   f"remove the block there by hand, or re-run --uninstall once it is back")
             continue
-        target, claude = parent / "AGENTS.md", parent / "CLAUDE.md"
-        created = remove_block(target) or set()
-        if claude.is_symlink():
-            if "claude" in created and os.readlink(claude) == "AGENTS.md":
-                claude.unlink()
-                print(f"removed {claude} (symlink created by install-discovery)")
-        else:
-            remove_block(claude)
-        leftovers += [target, claude]
-        forget_pointer_dir(parent)
+        leftovers += remove_pointer(parent)
     remove_block(CODEX_AGENTS)
+    report_bak(leftovers)
+    return 0
+
+
+def remove_pointers(dirs):
+    """--remove-parent: remove only the named pointers; skill links, the Codex block, and other
+    records stay. Every name is checked before the first removal, so a bad one removes nothing."""
+    recorded = recorded_pointer_dirs()
+    for parent in dirs:
+        if not parent.is_dir() and parent not in recorded:
+            print(f"--remove-parent {parent}: not a directory and not recorded in {POINTER_DIRS_KEY}",
+                  file=sys.stderr)
+            return 2
+        for path in (parent / "AGENTS.md", parent / "CLAUDE.md"):
+            if parent.is_dir() and path.is_file():
+                split_block(path, path.read_text())  # raises on a start marker with no end
+    leftovers = []
+    for parent in dirs:
+        if parent.is_dir():
+            leftovers += remove_pointer(parent)
+        else:
+            # Named explicitly, so the operator wants the record gone even though the dir is not here.
+            forget_pointer_dir(parent)
+            print(f"note: {parent} is not a directory here; if it comes back, remove its block by hand")
     report_bak(leftovers)
     return 0
 
@@ -514,10 +557,16 @@ def describe(parents):
 def parse(argv):
     known = {"--pointer", "--pointer-codex", "--pointer-at-home", "--skills", "--check",
              "--uninstall", "-h", "--help"}
-    flags, parents, unknown = set(), [], []
+    flags, parents, removals, unknown = set(), [], [], []
     args = iter(argv)
     for arg in args:
-        if arg == "--include":
+        if arg == "--remove-parent" or arg.startswith("--remove-parent="):
+            value = arg.split("=", 1)[1] if "=" in arg else next(args, None)
+            if not value:  # an empty value would resolve to the cwd and strip its pointer
+                unknown.append("--remove-parent (needs a directory)")
+            else:
+                removals.append(value)
+        elif arg == "--include":
             value = next(args, None)
             if value is None or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", value):
                 unknown.append(f"--include {value or '(needs a skills/ directory name)'}")
@@ -535,13 +584,13 @@ def parse(argv):
             flags.add(arg)
         else:
             unknown.append(arg)
-    return flags, parents, unknown
+    return flags, parents, removals, unknown
 
 
 def main(argv):
     if os.name != "posix":
         raise SystemExit("install-discovery supports POSIX hosts only (symlinks, ~/.claude layout).")
-    flags, parent_args, unknown = parse(argv)
+    flags, parent_args, removal_args, unknown = parse(argv)
     if unknown:
         print(f"unknown flag(s): {' '.join(sorted(unknown))}\n", file=sys.stderr)
         print(__doc__.strip(), file=sys.stderr)
@@ -561,20 +610,46 @@ def main(argv):
             return 2
         if parent not in parents:
             parents.append(parent)
+    # Not resolved strictly: a recorded dir that has since moved can still be named to forget it.
+    removals = list(dict.fromkeys(Path(arg).expanduser().resolve() for arg in removal_args))
+    if removals and "--uninstall" in flags:
+        print("--remove-parent cannot be combined with --uninstall, which already removes every pointer",
+              file=sys.stderr)
+        return 2
+    if removals and parents and "--pointer" not in flags:
+        print("--parent with --remove-parent does nothing without --pointer; add --pointer to move "
+              "the pointer, or drop --parent", file=sys.stderr)
+        return 2
+    explicit_parents = bool(parents)
     parents = parents or [root.parent]
-    if not flags & (writes | {"--check", "--uninstall"}):
+    if removals and "--pointer" in flags and set(removals) & set(parents):
+        which = "--parent" if explicit_parents else f"the default parent ({root.parent})"
+        print(f"--remove-parent and {which} name the same directory; pick one", file=sys.stderr)
+        return 2
+    if not flags & (writes | {"--check", "--uninstall"}) and not removals:
         return describe(parents)
-    if flags & writes:
+    gated = sorted(flags & writes) + (["--remove-parent"] if removals else [])
+    if gated:
         message = vaultconf.check_initialized(root)
         if message:
-            print(f"REFUSED {' '.join(sorted(flags & writes))}: {message}", file=sys.stderr)
+            print(f"REFUSED {' '.join(gated)}: {message}", file=sys.stderr)
             return 2
-    if flags & (writes | {"--uninstall"}):
+    if flags & (writes | {"--uninstall"}) or removals:
         refuse_worktree()
     status = 0
     if "--uninstall" in flags:
         status |= uninstall_skills()
         status |= uninstall_pointers(parents)
+    if removals:
+        # Before --pointer, so a move (--remove-parent old --pointer --parent new) is one run;
+        # the install's refusals run first, so a refused move removes nothing.
+        if "--pointer" in flags:
+            refused = refuse_pointers(parents, "--pointer-at-home" in flags)
+            if refused:
+                return refused
+        result = remove_pointers(removals)
+        if result:
+            return result
     if "--pointer" in flags:
         result = install_pointers(parents, "--pointer-at-home" in flags)
         if result:
