@@ -472,6 +472,10 @@ def self_test():
         ini.write_text("StylesPath = .vale/styles\n\n[*.md]\nTokenIgnores = x\n  [formats]\n  md = xml\n")
         assert any("is indented" in e for e in validate(root)[0]), \
             "an indented line that Vale reads as a new section was accepted"
+        ini.write_text("StylesPath = .vale/styles\u2028#/../../scripts\n\n[*.md]\nBasedOnStyles = vaultkit\n",
+                       encoding="utf-8")
+        assert any("Unicode line separator" in e for e in validate(root)[0]), \
+            "a value hidden behind a Unicode line separator was accepted"
         ini.write_bytes("StylesPath = .vale/styles\n".encode("utf-16"))
         assert any(".vale.ini: not UTF-8 text" in e for e in validate(root)[0]), "non-UTF-8 .vale.ini crashed or passed"
         ini.unlink()
