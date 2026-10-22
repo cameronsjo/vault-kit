@@ -115,9 +115,18 @@ HIDDEN_NAMES = {"__pycache__", ".gitignore", ".gitattributes"}
 # Bytecode and native extension modules: Python imports them in place of the reviewed .py.
 UNREADABLE_SUFFIXES = {".pyc", ".pyo", ".so", ".pyd", ".dylib",
                        *(suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES)}
-# Bytes a reviewer cannot read: NUL (git shows "Binary files differ"), and terminal controls
-# (ESC sequences and bare carriage returns can redraw the review). Tab and newline are fine.
-CONTROL_BYTES = re.compile(rb"[\x00-\x08\x0b-\x1f\x7f]")
+# Characters a reviewer cannot read: NUL (git shows "Binary files differ"), C0 and C1
+# terminal controls (ESC and CSI sequences, bare carriage returns redraw the review), bidi
+# overrides (reorder displayed code), and Unicode line separators. Tab and newline are fine.
+UNREVIEWABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029]")
+
+
+def unreviewable(data):
+    """True when data is not UTF-8 text a reviewer can read as displayed."""
+    try:
+        return bool(UNREVIEWABLE.search(data.decode("utf-8")))
+    except UnicodeDecodeError:
+        return True
 
 
 def hidden_by_name(rel):
@@ -167,8 +176,9 @@ def read_manifest(clone):
         if hidden_by_name(rel):
             refuse(f"{where}: {entry} would be hidden from the review (bytecode, a native module, "
                    "or a git ignore or attributes file)")
-        if CONTROL_BYTES.search((clone / rel).read_bytes()):
-            refuse(f"{where}: {entry} holds binary or terminal control bytes the review cannot read")
+        if unreviewable((clone / rel).read_bytes()):
+            refuse(f"{where}: {entry} is not plain UTF-8 text (binary, terminal control, bidi, or "
+                   "line separator characters) the review can read")
         paths.append(rel)
     ignored = ignored_paths(paths)
     if ignored:

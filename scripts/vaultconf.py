@@ -365,6 +365,7 @@ VALE_RULE_KINDS = {"existence", "substitution", "occurrence", "repetition", "con
                    "conditional", "capitalization", "metric", "sequence"}
 VALE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 VALE_SECTION_RE = re.compile(r"\[([^\[\]]+)\]")
+VALE_LINE_BREAKS = re.compile("[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
 VALE_KEY_RE = re.compile(r"([A-Za-z0-9_.-]+)[ \t]*=[ \t]*(.*)")
 
 
@@ -378,7 +379,11 @@ def vale_ini_lines(text):
     multi-line or quoted-block values, no duplicate keys, no [DEFAULT].
     """
     settings, seen, section = [], set(), None
-    for number, line in enumerate(text.splitlines(), 1):
+    # Split on newline only, as go-ini does: str.splitlines() also splits on \r, U+2028 and
+    # friends, which would let one Go line hide a second value behind a "comment".
+    for number, line in enumerate(text.split("\n"), 1):
+        if VALE_LINE_BREAKS.search(line):
+            return None, f"line {number} holds a carriage return or Unicode line separator"
         if not line.strip() or line[0] in "#;":
             continue
         if line[0].isspace():

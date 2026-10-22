@@ -10,7 +10,8 @@
 #   v0.0.8  .claude/settings.json: outside every engine location
 #   v0.0.9  Scripts/engine-fixture.txt: an engine location spelled in another case
 #   v0.0.10 Vale config inside the allowlist; v0.0.11-v0.0.20 and v0.0.26-v0.0.32 each break one
-#           allowlist rule; v0.0.21-v0.0.25 and v0.0.33-v0.0.35 ship files the review would not see
+#           allowlist rule; v0.0.21-v0.0.25 and v0.0.33-v0.0.35 and v0.0.38-v0.0.40 ship files
+#           the review would not see; v0.0.36-v0.0.37 hide a value behind a Unicode line separator
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 repo=$(pwd)
@@ -94,6 +95,23 @@ tag_manifest v0.0.32 '.vale.ini\n.vale/styles/vaultkit/x.xsl\n'
 tag_manifest v0.0.33 'scripts/mod.cpython-312-darwin.so\n'
 tag_manifest v0.0.34 'scripts/redraw.sh\n'
 tag_manifest v0.0.35 'scripts/blob.txt\n'
+# Characters Python and go-ini split or display differently, written with python3 because
+# /bin/bash 3.2 has no \u escapes.
+python3 - <<'FIXTURE'
+good = "StylesPath = .vale/styles\nMinAlertLevel = suggestion\n\n[*.md]\nBasedOnStyles = vaultkit\n"
+open("vale-ls.ini", "w", encoding="utf-8").write("StylesPath = .vale/styles\u2028#/../../scripts\n\n[*.md]\nBasedOnStyles = vaultkit\n")
+open("vale-nel.ini", "w", encoding="utf-8").write("StylesPath = .vale/styles\u0085#/../../scripts\n\n[*.md]\nBasedOnStyles = vaultkit\n")
+open("scripts/bidi.sh", "w", encoding="utf-8").write("#!/bin/sh\necho ok # \u202e)tpircs live(\n")
+open("scripts/csi.sh", "w", encoding="utf-8").write("#!/bin/sh\necho ok\u009b2K\n")
+open("scripts/latin1.sh", "wb").write(b"#!/bin/sh\necho caf\xe9\n")
+FIXTURE
+g add -Af
+cp vale-ls.ini .vale.ini && tag_manifest v0.0.36 "$vale_manifest"
+cp vale-nel.ini .vale.ini && tag_manifest v0.0.37 "$vale_manifest"
+printf '%b' "$good_ini" > .vale.ini && g add -A
+tag_manifest v0.0.38 'scripts/bidi.sh\n'
+tag_manifest v0.0.39 'scripts/csi.sh\n'
+tag_manifest v0.0.40 'scripts/latin1.sh\n'
 v1_commit=$(g rev-parse 'v0.0.1^{commit}')
 
 # --- fixture vault: a git repo with the real script and a stub `make check`
@@ -174,7 +192,8 @@ for case in "v0.0.11:not an engine location" "v0.0.12:not an engine location" "v
     "v0.0.17:StylesPath must be" "v0.0.18:StylesPath must be" "v0.0.19:set twice" \
     "v0.0.20:extends 'script'" "v0.0.26:is indented" "v0.0.27:\\[DEFAULT\\] is not allowed" \
     "v0.0.28:quoted or multi-line value" "v0.0.29:vale.spelling is not a rule" "v0.0.30:line continuation" \
-    "v0.0.31:Vale reads this name" "v0.0.32:only rule files"; do
+    "v0.0.31:Vale reads this name" "v0.0.32:only rule files" "v0.0.36:line separator" \
+    "v0.0.37:line separator"; do
   tag=${case%%:*}; word=${case#*:}
   err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
   grep -qE "$word" <<<"$err" || { echo "FAIL: $tag refusal does not mention '$word': $err"; fail=1; }
@@ -187,7 +206,8 @@ done
 echo "--- files the review would not see are refused before anything is copied"
 for case in "v0.0.21:hidden from the review" "v0.0.22:hidden from the review" "v0.0.23:hidden from the review" \
     "v0.0.24:hidden from the review" "v0.0.25:hidden from the review" "v0.0.33:hidden from the review" \
-    "v0.0.34:control bytes" "v0.0.35:control bytes"; do
+    "v0.0.34:not plain UTF-8 text" "v0.0.35:not plain UTF-8 text" "v0.0.38:not plain UTF-8 text" \
+    "v0.0.39:not plain UTF-8 text" "v0.0.40:not plain UTF-8 text"; do
   tag=${case%%:*}; word=${case#*:}
   err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
   grep -q "$word" <<<"$err" || { echo "FAIL: $tag refusal does not mention '$word': $err"; fail=1; }
