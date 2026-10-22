@@ -210,4 +210,8 @@ def main(spec, argv, unavailable_exit):
     if argv == ["--vault-resolve"]:
         print(path)
         raise SystemExit(0)
-    os.execv(path, [path, *argv])
+    try:
+        os.execv(path, [path, *argv])
+    except OSError as error:  # exit 2, never 1: callers read 1 as findings
+        print(f"{spec.name} wrapper: could not run {path} ({error}). Nothing was run.", file=sys.stderr)
+        raise SystemExit(2)
