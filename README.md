@@ -306,15 +306,16 @@ Agents and people follow the same loop, which `AGENTS.md` states in full.
 1. Work on a branch in a Git worktree, never directly on `main`.
 2. Read `wiki/index.md` and the relevant pages. Search with `scripts/qmd`.
 3. Make the change: add a new dated capture under `raw/` for new source material, update the affected wiki pages, and keep attribution and uncertainty.
-4. Append an entry to `wiki/log.md`, run `make indexes`, stage the files, and commit. The hook checks the staged snapshot.
+4. Run `make prose FILES="<pages you changed>"` and fix the warnings in your own pages. Append an entry to `wiki/log.md`, run `make indexes`, stage the files, and commit. The hook checks the staged snapshot.
 5. Open a pull request, then run `make refresh` after merging to update search.
 
 Commands:
 
 - `make check`: the vault check, the index check, and the secret scan.
 - `make refresh`: `make check`, then update and embed the search index.
-- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire` and `scripts/md-outline`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
+- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire`, `scripts/md-outline`, the pinned Vale wrapper and `make prose`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
 - `make indexes`: regenerate the directory indexes.
+- `make prose [FILES="a.md b.md"]`: the advisory prose check. A pinned Vale (`scripts/vale`, downloaded and SHA-256-verified on first use) lints the pages with the `vaultkit` style, whose rules come from `wiki/system/writing.md`. It prints one `path:line:col:rule:message` line per alert, then a count, and never fails on a warning. With no `FILES` it lints every page under `wiki/` and `docs/`, plus `README.md` and `AGENTS.md`. `raw/` and `wiki/log.md` are never linted. Wrap a quoted passage in `<!-- vale off -->` and `<!-- vale on -->`. Offline, it prints a skip line and exits 0 (CI sets `VAULT_KIT_REQUIRE_VALE=1`, which makes that a failure). A checksum mismatch always fails.
 
 ## Updating
 
