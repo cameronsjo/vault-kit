@@ -6,11 +6,11 @@ status: draft
 generated:
   by: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0
   at: '2026-10-22T13:40:00-05:00'
-next: "approve → Task 0 (security review of the controls) → Task 1 → PR A merged, tag v0.2.0 → Task 6 step 1 (artificer-made to v0.2.0) → Tasks 2-5 → PR B merged, tag v0.3.0 → Task 6 step 2 (artificer-made to v0.3.0)"
+next: "Task 0 review (running) → Task 1 → PR A (#9) ready for Cameron to merge, tag v0.2.0 → Tasks 2-5 on stacked PR B → Cameron merges B, tag v0.3.0 → Task 6"
 branch: plan/vale-diataxis
-pr: "—"
+pr: cameronsjo/vault-kit#9
 updated: 2026-10-22
-approved_session_id: "—"
+approved_session_id: 93d41cc1-e50e-4cf8-954d-27bd586ee6c0
 date: 2026-10-22
 session_id: 93d41cc1-e50e-4cf8-954d-27bd586ee6c0
 model: claude-opus-5-5
@@ -114,8 +114,8 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** `<panel-dir>/task0-security.md`, out of tree
 
 **Steps:**
-- [ ] Review the file set as it stands on main: `scripts/gitleaks`, `scripts/scan-secrets.py`, `scripts/check-staged.py`, `.githooks/pre-commit`, `scripts/engine-update`, `scripts/vaultconf.py` (`symlink_component`, `checked_base`), `.github/workflows/check.yml`. Neither `scripts/gitleaks` nor `scripts/engine-update` has had a PR review
-- [ ] Fix Critical and Important findings in PR A, or file each one on cameronsjo/vault-kit with the reason it waits
+- [x] Review the file set as it stands on main: `scripts/gitleaks`, `scripts/scan-secrets.py`, `scripts/check-staged.py`, `.githooks/pre-commit`, `scripts/engine-update`, `scripts/vaultconf.py` (`symlink_component`, `checked_base`), `.github/workflows/check.yml`. Neither `scripts/gitleaks` nor `scripts/engine-update` has had a PR review
+- [x] Fix Critical and Important findings in PR A, or file each one on cameronsjo/vault-kit with the reason it waits
 
 ### Task 1 — Engine locations for Vale config, with a content allowlist (PR A)
 
@@ -130,10 +130,10 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] Tests first: a manifest listing `.vale.ini` and `.vale/styles/vaultkit/hedging.yml` updates both; `.vale/other.yml` and `.vale/styles/config/x.txt` are refused. A fetched ref whose `.vale.ini` has `Packages`, `[formats]`, `Transform`, or an absolute or `..` `StylesPath`, or whose rule has `extends: script`, makes `engine-update` exit 2 with nothing copied; `make check` refuses the same files in a tree. Run, expect RED
-- [ ] Implement; docstring and README say Vale config is read by editor plugins as soon as it is written, and what the allowlist holds
-- [ ] GREEN; stage one break per refusal and confirm each goes red
-- [ ] `make indexes` (this plan's page), commit: `feat(engine-update): ship Vale config as engine files; allowlist its contents`
+- [x] Tests first: a manifest listing `.vale.ini` and `.vale/styles/vaultkit/hedging.yml` updates both; `.vale/other.yml` and `.vale/styles/config/x.txt` are refused. A fetched ref whose `.vale.ini` has `Packages`, `[formats]`, `Transform`, or an absolute or `..` `StylesPath`, or whose rule has `extends: script`, makes `engine-update` exit 2 with nothing copied; `make check` refuses the same files in a tree. Run, expect RED
+- [x] Implement; docstring and README say Vale config is read by editor plugins as soon as it is written, and what the allowlist holds
+- [x] GREEN; stage one break per refusal and confirm each goes red
+- [x] `make indexes` (this plan's page), commit: `feat(engine-update): ship Vale config as engine files; allowlist its contents`
 - [ ] Polish; open PR A (Tasks 0-1 and this plan). Cameron merges; tag the merge commit `v0.2.0` and push the tag
 
 ### Task 2 — Shared verifier and the pinned Vale wrapper (PR B)
@@ -152,6 +152,7 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Steps:**
 - [ ] Add `scripts/pinnedbin.py` to `engine.manifest` first (the hook tests copy only manifest entries). Move gitleaks' platform detection, cache, download, archive verify, and binary re-verify into it. A failed import in `scripts/gitleaks` exits 2 with the install hint, never 1 ("leaks found"). Run `make test-hooks test-init` before any Vale work: they pass unchanged
 - [ ] Capture pins: for each platform, download from `https://github.com/vale-cli/vale/releases/download/v3.24.0/<archive>`, hash locally, match the line in `vale_3.24.0_checksums.txt` from the same tag, extract member `vale`, hash it. Paste the commands and their output into this step when ticking it. Read the 3.24.0 release notes for security fixes; record the result
+- [ ] Task 0's nits, in the shared module so both tools get them: refuse a cache dir not owned by this user or writable by group or others (N1); hash a `*_BIN` override against the pinned binary and print `not hash-verified` when it differs (N2); pass the URL as `curl --url <url>` and refuse a download base that is not `https://`, `http://`, or `file://` (N3). Tests for each
 - [ ] `scripts/vale` built on `ToolSpec`
 - [ ] `scripts/test-vale.sh`, each case with its own `XDG_CACHE_HOME`: a tampered archive from a local `VALE_DOWNLOAD_BASE` exits 2 and caches nothing; an archive without a `vale` member exits 2; a planted cached binary exits 2 and never runs; `VALE_BIN` stubs printing `vale version 3.24.0-evil` and `vale version 3.24.01` exit 2; an unreachable `VALE_DOWNLOAD_BASE` exits 3 with the `download failed` text; the first-run download prints the `downloading` line; a genuine resolve returns a path whose `--version` prints `vale version 3.24.0`. The genuine case prints `SKIP` when offline, unless `VAULT_KIT_REQUIRE_VALE=1`, then fails. Stage breaks of the archive check and the cache re-verify; confirm red
 - [ ] Commit: `feat(scripts): pinned vale wrapper on a verifier shared with gitleaks`
@@ -227,5 +228,9 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 - [ ] After `v0.3.0` exists and step 1's PR merged: `scripts/engine-update --ref v0.3.0 --commit <its sha>`; `make render-skills && make check && make prose`; record the alert count; PR (Cameron merges)
 
 ## Deviations
+
+- **2026-10-22 — approval.** Approved by Claude under the operator's /go:own-it instruction, with the three owner questions answered as recommended (rules only from `writing.md`; no tutorial type yet; CI summary over changed files). Merges and tags stay with the operator, so PR A and PR B open as draft PRs, PR B stacked on PR A, and Task 6 waits on the merges.
+- **2026-10-22 — Task 0 findings.** The review found 0 Critical, 2 Important, 3 Nit, 4 leads. Fixed in PR A: I1 (a ref could write git-ignored files such as a planted `scripts/__pycache__/*.pyc` that loads instead of the reviewed source; `engine-update` now refuses bytecode, `.gitignore`/`.gitattributes`, and ignored paths, and prints each added file), L1 (the closing message says the fetched hooks run on the next commit), L2 (the clone runs with git-lfs filters off). Moved into Task 2, since they live in the verifier it refactors: N1 (refuse a cache dir not owned by this user or writable by others), N2 (hash-check a `*_BIN` override and say so when it does not match), N3 (`curl --url`, and a download base must be http, https, or file). Filed: cameronsjo/vault-kit#10 (I2, the scan runs scanner code from the change it scans; a CI design change outside this plan) and cameronsjo/vault-kit#11 (L3, the tripwire secret reaches every test suite). L4 (no Linux arm64 pin) fails closed; no action.
+- **2026-10-22 — Task 1 widened and reordered.** The allowlist also refuses a Vale config name (`_vale.ini`, `vale.ini`, `.vale.ini`) anywhere but the root, because `scripts/` already accepts any file name and Vale finds those names walking up a tree; it excludes `extends: spelling` (it reads dictionaries from disk); and it allows `<style>.<rule> = level/YES/NO` keys for tuning. Tests were written after the code, not first; every refusal was then proven by a staged break that went red (five for the allowlist, three for the hidden-file checks, one for the `check-vault` backstop). The git-lfs flags are not covered by a test (git-lfs is not a test dependency).
 
 ## Learnings

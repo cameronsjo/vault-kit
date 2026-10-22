@@ -231,6 +231,10 @@ def validate(root, deny=(), deny_source="vault.toml"):
                           f"{', '.join(sorted(d + '/' for d in SYMLINK_FREE))}; commit a regular "
                           "file or directory")
     errors.extend(redaction_errors(root, deny, deny_source))
+    # The same allowlist engine-update applies before copying, as the CI backstop.
+    errors.extend(vaultconf.vale_errors(root, [p.relative_to(root) for p in listed
+                                               if p.is_file() and not p.is_symlink()
+                                               and not ignored(p.relative_to(root).parts)]))
     docs = documents(root)
     if not docs:
         return ["No Markdown documents found"], 0
@@ -438,9 +442,29 @@ def self_test():
             assert any(f"example.md: frontmatter" in e and why in e for e in validate(root)[0]), \
                 f"malformed frontmatter accepted: {bad!r}"
         doc.write_text(good)
+        # Vale config: the allowlist engine-update applies before copying holds over the tree too.
+        ini, rule = root / ".vale.ini", root / ".vale" / "styles" / "vaultkit" / "filler.yml"
+        rule.parent.mkdir(parents=True)
+        rule_text = "extends: existence\nmessage: filler\nlevel: warning\ntokens: [basically]\n"
+        ini.write_text("StylesPath = .vale/styles\n\n[*.md]\nBasedOnStyles = vaultkit\n")
+        rule.write_text(rule_text)
+        assert not validate(root)[0], "allowed Vale config was rejected"
+        ini.write_text("Packages = Google\nStylesPath = .vale/styles\n")
+        assert any(".vale.ini: top-level key packages" in e for e in validate(root)[0]), \
+            "a .vale.ini with Packages was accepted"
+        ini.write_text("StylesPath = .vale/styles\n")
+        rule.write_text("extends: script\nmessage: x\nscript: x\n")
+        assert any("extends 'script'" in e for e in validate(root)[0]), "a script rule was accepted"
+        rule.write_text(rule_text)
+        nested = root / "scripts" / "vale.ini"
+        nested.parent.mkdir()
+        nested.write_text("StylesPath = /etc\n")
+        assert any("only the root .vale.ini" in e for e in validate(root)[0]), \
+            "a nested Vale config name was accepted"
     print("Validator controls passed: unknown fields accepted; bad type, link, lifecycle, and filename rejected; "
           "skills/ exempt from metadata but not from name or credential checks; "
-          "deny patterns and credential URLs caught in any non-binary file.")
+          "deny patterns and credential URLs caught in any non-binary file; "
+          "Vale config held to its allowlist.")
 
 
 if __name__ == "__main__":

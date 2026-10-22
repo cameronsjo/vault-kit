@@ -9,6 +9,7 @@
 #   v0.0.6  WIKI/log.md, v0.0.7 Agents.md: vault-owned paths in another case
 #   v0.0.8  .claude/settings.json: outside every engine location
 #   v0.0.9  Scripts/engine-fixture.txt: an engine location spelled in another case
+#   v0.0.10 Vale config inside the allowlist; v0.0.11-v0.0.20 each break one allowlist rule
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 repo=$(pwd)
@@ -46,6 +47,37 @@ tag_manifest v0.0.6 'scripts/engine-fixture.txt\nWIKI/log.md\n'
 tag_manifest v0.0.7 'scripts/engine-fixture.txt\nAgents.md\n'
 tag_manifest v0.0.8 'scripts/engine-fixture.txt\n.claude/settings.json\n'
 tag_manifest v0.0.9 'Scripts/engine-fixture.txt\n'
+# Vale config: v0.0.10 is inside the allowlist; every later vale tag breaks one rule of it.
+good_ini='StylesPath = .vale/styles\nMinAlertLevel = suggestion\n\n[*.md]\nBasedOnStyles = vaultkit\nvaultkit.filler = NO\n'
+vale_manifest='.vale.ini\n.vale/styles/vaultkit/hedging.yml\n'
+mkdir -p .vale/styles/vaultkit .vale/styles/config && printf '%b' "$good_ini" > .vale.ini
+printf 'extends: existence\nmessage: hedge\nlevel: warning\ntokens: [probably]\n' > .vale/styles/vaultkit/hedging.yml
+printf 'x\n' > .vale/other.yml && printf 'x\n' > .vale/styles/config/x.txt && cp .vale.ini scripts/.vale.ini
+g add -A && tag_manifest v0.0.10 "$vale_manifest"
+tag_manifest v0.0.11 '.vale/other.yml\n'
+tag_manifest v0.0.12 '.vale/styles/config/x.txt\n'
+tag_manifest v0.0.13 'scripts/.vale.ini\n'
+tag_ini() { # tag, .vale.ini text
+  printf '%b' "$2" > .vale.ini; tag_manifest "$1" "$vale_manifest"
+}
+tag_ini v0.0.14 "Packages = Google\n$good_ini"
+tag_ini v0.0.15 "$good_ini\n[formats]\nmdx = md\n"
+tag_ini v0.0.16 "Transform = x.xsl\n$good_ini"
+tag_ini v0.0.17 'StylesPath = /etc\n\n[*.md]\nBasedOnStyles = vaultkit\n'
+tag_ini v0.0.18 'StylesPath = ../styles\n\n[*.md]\nBasedOnStyles = vaultkit\n'
+tag_ini v0.0.19 'StylesPath = .vale/styles\nStylesPath = .vale/styles\n'
+printf '%b' "$good_ini" > .vale.ini
+printf 'extends: script\nmessage: x\nscript: x\n' > .vale/styles/vaultkit/hedging.yml
+tag_manifest v0.0.20 "$vale_manifest"
+# Files the review would not see: bytecode, git ignore/attributes files, a path the vault ignores.
+mkdir -p scripts/__pycache__ && printf 'bytecode\n' > scripts/__pycache__/vaultconf.cpython-312.pyc
+printf 'bytecode\n' > scripts/loose.pyc && printf '*.txt\n' > scripts/.gitignore
+printf '* -diff\n' > scripts/.gitattributes && printf 'hidden\n' > scripts/run.log && g add -Af
+tag_manifest v0.0.21 'scripts/__pycache__/vaultconf.cpython-312.pyc\n'
+tag_manifest v0.0.22 'scripts/loose.pyc\n'
+tag_manifest v0.0.23 'scripts/.gitignore\n'
+tag_manifest v0.0.24 'scripts/.gitattributes\n'
+tag_manifest v0.0.25 'scripts/run.log\n'
 v1_commit=$(g rev-parse 'v0.0.1^{commit}')
 
 # --- fixture vault: a git repo with the real script and a stub `make check`
@@ -57,6 +89,7 @@ printf 'engine v0\n' > scripts/engine-fixture.txt
 printf 'my own page\n' > wiki/page.md
 printf '# Log\n' > wiki/log.md
 printf '# My agents\n' > AGENTS.md
+printf '*.log\n' > .gitignore
 g init -q -b main . && g add -A && g commit -q -m vault
 run() { python3 scripts/engine-update "$@"; }
 expect() { # label, wanted, got
@@ -89,6 +122,9 @@ grep -q 'updated scripts/engine-fixture.txt' <<<"$out" || { echo "FAIL: changed 
 grep -q 'added scripts/engine-added.txt' <<<"$out" || { echo "FAIL: added path not printed: $out"; fail=1; }
 if grep -q 'FIXTURE-MAKE-CHECK-RAN' <<<"$out"; then echo "FAIL: engine-update ran make check from the fetched ref"; fail=1; fi
 grep -qF 'run `make render-skills && make check`' <<<"$out" || { echo "FAIL: no review instruction: $out"; fail=1; }
+grep -qF 'runs the fetched hooks' <<<"$out" || { echo "FAIL: closing message does not warn that the hooks go live: $out"; fail=1; }
+# An added file is untracked, so git diff never shows it; engine-update prints its content.
+grep -qF '+new engine file' <<<"$out" || { echo "FAIL: added file content not shown: $out"; fail=1; }
 grep -q 'scripts/engine-fixture.txt' <<<"$(sed -n '/engine files changed/,$p' <<<"$out")" || { echo "FAIL: diff stat not printed: $out"; fail=1; }
 [ ! -e not-in-manifest.txt ] || { echo "FAIL: non-manifest file was copied"; fail=1; }
 expect "vault.toml untouched" 'name = "fixture"' "$(grep '^name' vault.toml)"
@@ -108,6 +144,35 @@ done
 expect "wiki/log.md untouched by a WIKI/log.md entry" "# Log" "$(cat wiki/log.md)"
 expect "AGENTS.md untouched by an Agents.md entry" "# My agents" "$(cat AGENTS.md)"
 [ ! -e .claude ] || { echo "FAIL: a manifest wrote .claude/"; fail=1; }
+
+echo "--- Vale config inside the allowlist is copied"
+run --ref v0.0.10 --source "$src" >/dev/null 2>&1; expect "v0.0.10 exit" 0 $?
+grep -q 'BasedOnStyles = vaultkit' .vale.ini && [ -f .vale/styles/vaultkit/hedging.yml ] ||
+  { echo "FAIL: allowed Vale config was not copied"; fail=1; }
+g add -A && g commit -q -m vale
+good=$(cat .vale.ini)
+
+echo "--- Vale config outside the allowlist is refused before anything is copied"
+for case in "v0.0.11:not an engine location" "v0.0.12:not an engine location" "v0.0.13:Vale reads this name" \
+    "v0.0.14:top-level key packages" "v0.0.15:section \[formats\]" "v0.0.16:top-level key transform" \
+    "v0.0.17:StylesPath must be" "v0.0.18:StylesPath must be" "v0.0.19:not a parseable config" \
+    "v0.0.20:extends 'script'"; do
+  tag=${case%%:*}; word=${case#*:}
+  err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
+  grep -qE "$word" <<<"$err" || { echo "FAIL: $tag refusal does not mention '$word': $err"; fail=1; }
+  expect "$tag left .vale.ini alone" "$good" "$(cat .vale.ini)"
+  grep -q 'extends: existence' .vale/styles/vaultkit/hedging.yml || { echo "FAIL: $tag rewrote the rule"; fail=1; }
+done
+[ ! -e scripts/.vale.ini ] && [ ! -e .vale/other.yml ] && [ ! -e .vale/styles/config ] ||
+  { echo "FAIL: a refused Vale path was written"; fail=1; }
+
+echo "--- files the review would not see are refused before anything is copied"
+for tag in v0.0.21 v0.0.22 v0.0.23 v0.0.24 v0.0.25; do
+  err=$(run --ref "$tag" --source "$src" 2>&1 >/dev/null); expect "$tag exit" 2 $?
+  grep -q 'hidden from the review' <<<"$err" || { echo "FAIL: $tag refusal does not say why: $err"; fail=1; }
+done
+[ ! -e scripts/__pycache__ ] && [ ! -e scripts/loose.pyc ] && [ ! -e scripts/.gitignore ] \
+  && [ ! -e scripts/.gitattributes ] && [ ! -e scripts/run.log ] || { echo "FAIL: a hidden file was written"; fail=1; }
 
 echo "--- this repository's own engine.manifest stays inside the engine locations"
 python3 - "$repo" <<'PY' || { echo "FAIL: engine.manifest lists a path engine-update would refuse"; fail=1; }
