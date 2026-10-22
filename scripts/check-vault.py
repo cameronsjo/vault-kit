@@ -455,6 +455,8 @@ def self_test():
         ini.write_text("StylesPath = .vale/styles\n")
         rule.write_text("extends: script\nmessage: x\nscript: x\n")
         assert any("extends 'script'" in e for e in validate(root)[0]), "a script rule was accepted"
+        rule.write_text("extends: script\nextends: existence\nmessage: x\ntokens: [x]\n")
+        assert any("a key is set twice" in e for e in validate(root)[0]), "a duplicate extends key was accepted"
         rule.write_text(rule_text)
         nested = root / "scripts" / "vale.ini"
         nested.parent.mkdir()
