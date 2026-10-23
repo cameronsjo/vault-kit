@@ -6,9 +6,9 @@ status: draft
 generated:
   by: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0
   at: '2026-10-22T13:40:00-05:00'
-next: "Cameron merges PR A (#9) → tag v0.2.0 → Task 6 step 1 (artificer-made to v0.2.0) → PR B (#12) base moves to main, Cameron merges → tag v0.3.0 → Task 6 step 2"
-branch: plan/vale-diataxis
-pr: cameronsjo/vault-kit#9
+next: "Cameron merges artificermade/artificer-made#6 (v0.2.0) and PR B (#12) → tag v0.3.0 → Task 6 step 2"
+branch: feat/vale-prose
+pr: cameronsjo/vault-kit#12
 updated: 2026-10-22
 approved_session_id: 93d41cc1-e50e-4cf8-954d-27bd586ee6c0
 date: 2026-10-22
@@ -233,7 +233,7 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 **Report:** —
 
 **Steps:**
-- [ ] After `v0.2.0` exists: `scripts/engine-update --ref v0.2.0 --commit <its sha>` in a worktree; `make check`; PR (Cameron merges). This installs the engine-update that accepts `.vale*` and checks its contents
+- [x] After `v0.2.0` exists: `scripts/engine-update --ref v0.2.0 --commit <its sha>` in a worktree; `make check`; PR (Cameron merges). This installs the engine-update that accepts `.vale*` and checks its contents
 - [ ] After `v0.3.0` exists and step 1's PR merged: `scripts/engine-update --ref v0.3.0 --commit <its sha>`; `make render-skills && make check && make prose`; record the alert count; PR (Cameron merges)
 
 ## Deviations
