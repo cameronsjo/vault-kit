@@ -59,3 +59,11 @@ Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0. `wiki/system/writing.md
 ## [2026-10-22] maintenance | Classify page types by reader question
 
 Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0. `wiki/system/knowledge-format.md` gains a table mapping each page type to the Diátaxis question it answers (learn by doing, do a task, look something up, understand why), copied from the maintain skill's placement table, which is the source. The maintain skill and its operation checklist now name the reader's question before placing a page, split a page that answers two, and run `make prose` on the pages they change; `AGENTS.md` names `make prose` in Before you commit. Evidence: `make test-init` renders the skills; `make check` passes. Gaps: no page type answers learn by doing yet; existing vaults get the skill change through `engine-update` but not this table (`wiki/` is vault-owned).
+
+## [2026-10-22] maintenance | Field report: Vale prose checks rollout
+
+Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0. Added `wiki/field-reports/vale-prose-checks-rollout.md`, which records how `make prose` shipped in `v0.2.0` and `v0.3.0` and why the Vale config allowlist uses a strict newline-only parser. Evidence: cameronsjo/vault-kit#9 and #12 merged with CI passing; about 40 staged breaks went red; the first vault rollout passed `make check` and `make test` with byte-identical engine files. Gaps: cameronsjo/vault-kit#10, #11 and #13 stay open.
+
+## [2026-10-23] lint | Correct the Vale field report against its sources
+
+Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0 (source review). `wiki/field-reports/vale-prose-checks-rollout.md`: the staged-break count is 36 (21 in #9, 15 in #12), not about 40 as the entry above says; the TL;DR names both bypasses (indented lines and Unicode line separators); the vault-kit alert count is dated; an unsourced distro default is generalized. Evidence: the PR #9 and #12 bodies and the plan's Deviations. Gaps: none.
