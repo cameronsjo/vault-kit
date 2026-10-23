@@ -24,6 +24,8 @@ jobs:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       # The test suites fail, rather than skip, the secret-scan cases if gitleaks is missing.
       VAULT_KIT_REQUIRE_GITLEAKS: '1'
+      # Likewise Vale: an unavailable Vale fails the run here instead of skipping the prose check.
+      VAULT_KIT_REQUIRE_VALE: '1'
       # The runner's python3 (setup-python above), never a .venv from the checkout: make
       # uses it and does not put .venv/bin on PATH.
       PYTHON: python3
@@ -42,12 +44,19 @@ jobs:
           version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' scripts/gitleaks)
           test -n "${version}" || { echo "no VERSION in scripts/gitleaks" >&2; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-      # scripts/gitleaks checks the SHA-256 of a cached binary before running it, so a cache
-      # hit only saves the download.
+      - name: Read the pinned Vale version
+        id: vale
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' scripts/vale)
+          test -n "${version}" || { echo "no VERSION in scripts/vale" >&2; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      # scripts/gitleaks and scripts/vale check the SHA-256 of a cached binary before running
+      # it, so a cache hit only saves the download. Both versions are in the key, so bumping
+      # either saves a fresh cache.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.cache/vault-kit
-          key: vault-kit-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ steps.gitleaks.outputs.version }}
+          key: vault-kit-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ steps.gitleaks.outputs.version }}-vale-${{ steps.vale.outputs.version }}
       - run: make check
       - name: Check the vault is initialized (instances only)
         run: |
@@ -139,6 +148,31 @@ jobs:
           else
             python3 scripts/tripwire --base "${BASE}"
           fi
+      - name: Prose check on changed pages (advisory)
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+          SKIP: ${{ steps.base.outputs.skip }}
+        run: |
+          set -o pipefail
+          # Warnings never fail the run; an unverifiable or unavailable Vale does
+          # (VAULT_KIT_REQUIRE_VALE). The page writer reads the alerts first (the maintain
+          # skill runs make prose); this summary is the backstop. scripts/prose directly, not
+          # make prose: a NUL-separated array keeps any page name intact.
+          files=()
+          if [ -n "${SKIP}" ]; then
+            scope="every page (no base: ${SKIP})"
+          else
+            # Through a file, not process substitution: bash ignores a failing <(...).
+            git diff --name-only -z --diff-filter=d "${BASE}" HEAD -- '*.md' > "$RUNNER_TEMP/prose-names"
+            mapfile -d '' files < "$RUNNER_TEMP/prose-names"
+            scope="pages changed since ${BASE:0:12}"
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "Prose check: no Markdown changed since ${BASE:0:12}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          python3 scripts/prose "${files[@]}" | tee "$RUNNER_TEMP/prose.out"
+          echo "Prose check over ${scope}: $(tail -n 1 "$RUNNER_TEMP/prose.out")" >> "$GITHUB_STEP_SUMMARY"
       - name: Test suites
         env:
           # test-init runs the tripwire over a freshly initialized vault's rendered skills

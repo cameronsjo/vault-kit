@@ -1,0 +1,14 @@
+# writing.md: "Keep a sentence under about 35 words."
+extends: occurrence
+message: "This sentence is over 35 words; split it."
+level: suggestion
+scope: sentence
+max: 35
+token: \b(\w+)\b
+tests:
+  - name: flags a long sentence
+    input: This sentence keeps going and going with one clause after another clause after yet another clause so that by the time the reader reaches the end of it they have lost the start of it entirely and must read it again.
+    contains: "vaultkit.sentence-length"
+  - name: leaves a short sentence alone
+    input: This sentence is short.
+    absent: "vaultkit.sentence-length"

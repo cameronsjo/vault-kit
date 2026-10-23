@@ -1,0 +1,17 @@
+# writing.md: "Cut filler phrases: worth noting, it is important to note, in order to, basically."
+extends: existence
+message: "Cut '%s'."
+level: warning
+ignorecase: true
+tokens:
+  - worth noting
+  - it is important to note
+  - in order to
+  - basically
+tests:
+  - name: flags filler
+    input: It is worth noting that the index is generated.
+    contains: "vaultkit.filler"
+  - name: leaves a plain sentence alone
+    input: The index is generated.
+    absent: "vaultkit.filler"

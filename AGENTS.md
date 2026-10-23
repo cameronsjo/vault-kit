@@ -42,7 +42,7 @@ Every change to `raw/`, `wiki/`, or this file needs an appended entry in `wiki/l
 
 ## Before you commit
 
-Git is canonical; the search index is derived. Re-check branch and status first, stage only your own paths, and keep concurrent work. Run `make indexes`, stage the intended files, then commit; the pre-commit hook checks the staged snapshot. `make check` checks the working tree. After a documentation change, run `make refresh` to update retrieval. See `wiki/runbooks/standards-checks.md`.
+Git is canonical; the search index is derived. Re-check branch and status first, stage only your own paths, and keep concurrent work. Run `make indexes` and `make prose` (advisory), stage the intended files, then commit; the pre-commit hook checks the staged snapshot. `make check` checks the working tree. After a documentation change, run `make refresh` to update retrieval. See `wiki/runbooks/standards-checks.md`.
 
 ## Safety
 

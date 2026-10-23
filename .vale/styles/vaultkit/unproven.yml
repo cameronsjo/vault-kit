@@ -1,0 +1,18 @@
+# writing.md: "A README or a plan does not prove something works."
+extends: existence
+message: "'%s' claims it works without showing it; state what was checked, or say it is unverified."
+level: warning
+ignorecase: true
+tokens:
+  - should work
+  - should be working
+  - probably works
+  - seems to work
+  - hopefully works
+tests:
+  - name: flags an unproven claim
+    input: The sync should work after a restart.
+    contains: "vaultkit.unproven"
+  - name: leaves a stated limitation alone
+    input: The sync might miss a file that changes during the run.
+    absent: "vaultkit.unproven"

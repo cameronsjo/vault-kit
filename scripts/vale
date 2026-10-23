@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Run Vale pinned by version and SHA-256; pass every argument through.
+
+Resolution order (scripts/pinnedbin.py, shared with scripts/gitleaks):
+  1. VALE_BIN: an operator-installed Vale. `<bin> --version` must print exactly
+     `vale version <VERSION>`, or the wrapper exits 2. There is no unpinned escape.
+  2. A verified copy under ${XDG_CACHE_HOME:-$HOME/.cache}/vault-kit/vale-<version>/.
+  3. A download of the pinned release archive, verified before it is unpacked.
+     VALE_DOWNLOAD_BASE replaces the release URL (a mirror); checksums still apply.
+
+Exit 3 when no verified Vale can be obtained (no build for this platform, the download
+failed): the prose check is advisory, and scripts/prose decides what that means. Exit 2 on
+anything that could mean tampering (a checksum mismatch, a planted cache, a wrong VALE_BIN).
+`scripts/vale --vault-resolve` prints the verified binary's path and runs nothing.
+"""
+import vaultconf  # noqa: F401  (toolchain preflight)
+import sys
+
+VERSION = "3.24.0"
+RELEASE = f"https://github.com/vale-cli/vale/releases/download/v{VERSION}"
+# archive: hashed locally from the v3.24.0 tag URL and matched to vale_3.24.0_checksums.txt.
+# binary: SHA-256 of the vale file inside that verified archive, re-checked every run.
+PINNED = {
+    "darwin_arm64": {
+        "archive": "87b513f26499f6657c15cf7175ba5b058a7c1ff2bb2d4e07265db2dd43451e44",
+        "binary": "c790563403d9b8cd874c57b605b63c9ca932a3f6ce0ad85b9abe5cb0e5cc2f34",
+    },
+    "darwin_x64": {
+        "archive": "eeb39e86f1daac27cc2a77fef3af1824d50559bdc22329fb25fb921c80c79472",
+        "binary": "910902cf5664f8b8f03b0f633e6b8a8493bbc2d68fd5c54760ddc26871e683df",
+    },
+    "linux_x64": {
+        "archive": "867534ddb678abca7f214bc4706ead0922bd5252ffe8035fc227013f66c8b214",
+        "binary": "edfdfd7c78eacd42153b502eb8da96347940e573364c77ed34285780322cf78b",
+    },
+}
+ARCHIVES = {
+    "darwin_arm64": f"vale_{VERSION}_macOS_arm64.tar.gz",
+    "darwin_x64": f"vale_{VERSION}_macOS_64-bit.tar.gz",
+    "linux_x64": f"vale_{VERSION}_Linux_64-bit.tar.gz",
+}
+INSTALL_HINT = (f"Install Vale {VERSION} (https://github.com/vale-cli/vale/releases/tag/v{VERSION}, "
+                "or `brew install vale`), then set VALE_BIN to its path and retry.")
+UNAVAILABLE_EXIT = 3
+
+try:
+    import pinnedbin
+except ImportError as error:
+    print(f"vale wrapper: cannot load scripts/pinnedbin.py ({error}). {INSTALL_HINT}", file=sys.stderr)
+    raise SystemExit(2)
+
+SPEC = pinnedbin.ToolSpec(
+    name="vale", version=VERSION, release_url=RELEASE, archives=ARCHIVES, pins=PINNED,
+    env_prefix="VALE", version_args=("--version",), version_output=f"vale version {VERSION}",
+    install_hint=INSTALL_HINT)
+
+
+if __name__ == "__main__":
+    pinnedbin.main(SPEC, sys.argv[1:], unavailable_exit=UNAVAILABLE_EXIT)

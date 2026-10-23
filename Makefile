@@ -1,4 +1,4 @@
-.PHONY: setup check secrets deny-range check-initialized indexes merge-log refresh retrieval retrieval-setup retrieval-teardown test-retrieval install-hooks uninstall-hooks test-hooks test-install test-engine-update test-init test-tripwire test-md-outline test engine-update render-skills
+.PHONY: setup check secrets deny-range check-initialized indexes merge-log refresh retrieval retrieval-setup retrieval-teardown test-retrieval install-hooks uninstall-hooks test-hooks test-install test-engine-update test-init test-tripwire test-md-outline test-vale test-prose test prose engine-update render-skills
 # The repository virtualenv (.venv, gitignored, made by make setup) when scripts/venv-python
 # says it is safe to run (untracked, not a symlink; a worktree falls back to the primary
 # checkout's), else python3. Override with PYTHON=<interpreter>; check-staged.py passes its
@@ -29,6 +29,11 @@ check:
 	$(PYTHON) scripts/check-vault.py $(if $(DENY_FROM),--deny-from "$(DENY_FROM)")
 	$(PYTHON) scripts/index-vault.py --check
 	$(MAKE) --no-print-directory secrets
+
+# Advisory prose check with the pinned Vale (scripts/prose): warnings from wiki/system/writing.md,
+# one path:line:col:rule:message per line. FILES="a.md b.md" lints only those pages.
+prose:
+	$(PYTHON) scripts/prose $(FILES)
 
 # Secret scan with the pinned gitleaks (scripts/scan-secrets.py). SECRETS_MODE picks what it reads:
 #   worktree (default)  tracked and untracked files, minus .gitignore'd ones: your edits
@@ -86,11 +91,15 @@ test-init:
 	bash scripts/test-env.sh bash scripts/test-init.sh
 test-tripwire:
 	bash scripts/test-env.sh bash scripts/test-tripwire.sh
+test-vale:
+	bash scripts/test-env.sh bash scripts/test-vale.sh
+test-prose:
+	bash scripts/test-env.sh bash scripts/test-prose.sh
 test-md-outline:
 	bash scripts/test-env.sh bash scripts/test-md-outline.sh
 test-env:
 	bash scripts/test-env.sh $(PYTHON) scripts/test-test-env.py
-test: test-env test-hooks test-install test-engine-update test-init test-tripwire test-md-outline
+test: test-env test-hooks test-install test-engine-update test-init test-tripwire test-md-outline test-vale test-prose
 
 # Needs npm QMD installed; not part of `make test`. VAULT_KIT_TEST_SEMANTIC=1 adds the embedding leg.
 test-retrieval:

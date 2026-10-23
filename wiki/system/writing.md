@@ -12,6 +12,8 @@ generated:
 ## Style
 
 - Write plainly and keep pages short. One topic per page, one idea per sentence.
+- Keep a sentence under about 35 words.
+- Cut filler phrases: `worth noting`, `it is important to note`, `in order to`, `basically`.
 - Say what is, not what is not. Prefer a direct statement to a hedge.
 - Define a term of art the first time it appears.
 - Link to a source or sibling page instead of copying its text.

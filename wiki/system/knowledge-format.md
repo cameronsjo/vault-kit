@@ -37,6 +37,17 @@ Each content directory has an `index.md` for progressive discovery. `make indexe
 
 Use file-relative Markdown links; Obsidian and Git both render them. Keep paths stable. To retire a concept, mark it `deprecated` and point to its replacement before removing inbound links. OKF consumers tolerate broken links; this vault's check rejects them so the tree stays navigable.
 
+## Page types by question
+
+Each page type answers one of the four reader questions of the Diátaxis documentation framework. Name the question before picking a type; a page that answers two questions becomes two linked pages. The maintain skill's placement table (`templates/skills/maintain/skill.md.tmpl`, Step 2) is the source; this copy is for people.
+
+| Question | Page types |
+|---|---|
+| Learn by doing | none yet; a runbook whose first line says it walks a newcomer through |
+| Do a task | Runbook |
+| Look something up | Capability, the system pages |
+| Understand why | Doctrine, Field report, Journey (how one outcome flows across parts; its steps live in runbooks) |
+
 ## Templates
 
 Templates in `wiki/templates/` are `type: Template` concepts. When you copy one, set the new page's real type, title, description, writer, time, and sources. Do not copy a verification claim.

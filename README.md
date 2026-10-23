@@ -13,34 +13,12 @@ vault-kit is a template for one Obsidian-compatible Git repository that holds sh
 
 This README has two jobs. It is a quickstart for setting up a vault on a locked-down work Mac under your employer's GitHub organization. It is also a blueprint: each part is described by what it does and the rule it enforces, so you can rebuild it without access to the code.
 
-## Layout
+The sections are ordered by the question you arrive with:
 
-```text
-vault.toml                  name, title, scope, root_env, [redaction] deny; template = true until init
-engine.manifest             paths vault-kit owns; make engine-update overwrites only these
-AGENTS.md                   instructions for every agent and person; CLAUDE.md is a symlink to it
-README.md  LICENSE          this file; Apache-2.0
-Makefile                    every command you run
-requirements-dev.txt        PyYAML, pinned
-.gitleaks.toml              secret-scan config for this vault (vault-owned, not updated by the engine)
-.githooks/                  pre-commit, pre-merge-commit, and the chain pass-through
-.github/workflows/check.yml CI
-.github/CODEOWNERS          code owners: every path except content (an allowlist)
-.obsidian/                  app, core-plugin and template settings; Sync is off
-scripts/                    all code: checks, init, install, retrieval, outline, engine update, tests
-templates/skills/           templates for the two agent skills
-skills/                     rendered skills, created by init (<name>-discover, <name>-maintain)
-raw/                        immutable source captures (created with the first capture)
-docs/plans/                 implementation plans
-wiki/                       maintained knowledge
-  index.md  log.md          the entry point and the append-only change log
-  system/                   how the vault works and how to write for it
-  templates/                page templates
-  runbooks/                 how-to pages, including retrieval, standards checks and seeding a new vault
-  capabilities/ journeys/ doctrine/ field-reports/
-.qmd/                       the search index for this vault (gitignored, created by make retrieval-setup)
-.venv/                      the Python virtual environment (gitignored, created by make setup; never commit it)
-```
+- **Set up a vault:** [Prerequisites](#prerequisites), [Quickstart](#quickstart), [Fill a new vault](#fill-a-new-vault).
+- **Use it day to day:** [Day to day](#day-to-day), [Updating](#updating), [Teardown](#teardown).
+- **Look something up:** [Layout](#layout), [Which harnesses read the pointer](#which-harnesses-read-the-pointer), [Blueprint](#blueprint) (every part and the rule it enforces).
+- **Understand the design:** [Multi-project use and trust](#multi-project-use-and-trust), [Sibling vault](#sibling-vault).
 
 ## Prerequisites
 
@@ -109,6 +87,73 @@ Then finish the setup that makes the vault safe to share:
 ## Fill a new vault
 
 A new vault is empty. [Fill a new vault on day one](wiki/runbooks/seeding-a-new-vault.md) shows how to capture a repository inventory by hand, sanitize it, and write the first capability cards, journeys and runbooks. It involves no seeding script. For a folder of existing docs, the maintain skill carries an ingest procedure.
+
+## Day to day
+
+Agents and people follow the same loop, which `AGENTS.md` states in full.
+
+1. Work on a branch in a Git worktree, never directly on `main`.
+2. Read `wiki/index.md` and the relevant pages. Search with `scripts/qmd`.
+3. Make the change: add a new dated capture under `raw/` for new source material, update the affected wiki pages, and keep attribution and uncertainty.
+4. Run `make prose FILES="<pages you changed>"` and fix the warnings in your own pages. Append an entry to `wiki/log.md`, run `make indexes`, stage the files, and commit. The hook checks the staged snapshot.
+5. Open a pull request, then run `make refresh` after merging to update search.
+
+Commands:
+
+- `make check`: the vault check, the index check, and the secret scan.
+- `make refresh`: `make check`, then update and embed the search index.
+- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire`, `scripts/md-outline`, the pinned Vale wrapper and `make prose`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
+- `make indexes`: regenerate the directory indexes.
+- `make prose [FILES="a.md b.md"]`: the advisory prose check. A pinned Vale (`scripts/vale`, downloaded and SHA-256-verified on first use) lints the pages with the `vaultkit` style, whose rules come from `wiki/system/writing.md`. It prints one `path:line:col:rule:message` line per alert, then a count, and never fails on a warning. With no `FILES` it lints every page under `wiki/` and `docs/`, plus `README.md` and `AGENTS.md`. `raw/` and `wiki/log.md` are never linted. Wrap a quoted passage in `<!-- vale off -->` and `<!-- vale on -->`. Offline, it prints a skip line and exits 0 (CI sets `VAULT_KIT_REQUIRE_VALE=1`, which makes that a failure). A checksum mismatch always fails.
+
+## Updating
+
+```bash
+make engine-update REF=v0.1.0 COMMIT=<the full commit id of v0.1.0 you reviewed>
+```
+
+Run it on a clean tree. Pass `COMMIT` so a tag moved after your review is refused. The update only copies files and prints `git status --short` and `git diff --stat`; it runs nothing from the fetched code. Review `git diff`, then run `make render-skills && make check`, then commit. The skill templates under `templates/` are engine files, so an update can change them, which is why `make render-skills` follows every update. Also run `make render-skills` after you edit a template yourself. The update writes only the engine locations listed under [Engine update](#engine-update), never `vault.toml`, `.gitleaks.toml`, `AGENTS.md`, `wiki/`, `raw/`, `docs/`, `skills/` or `.obsidian/`; changes vault-kit makes outside them need a hand merge.
+
+## Teardown
+
+Run these from the vault's primary checkout.
+
+```bash
+scripts/install-discovery --uninstall
+make retrieval-teardown
+make uninstall-hooks
+```
+
+The first removes the skill links, the pointer block and what the install created. The second removes the search collection and `.qmd/`. The third removes the Git hook links. The shared model cache under `~/.cache/qmd/models` stays; delete it by hand if you want the space back.
+
+## Layout
+
+```text
+vault.toml                  name, title, scope, root_env, [redaction] deny; template = true until init
+engine.manifest             paths vault-kit owns; make engine-update overwrites only these
+AGENTS.md                   instructions for every agent and person; CLAUDE.md is a symlink to it
+README.md  LICENSE          this file; Apache-2.0
+Makefile                    every command you run
+requirements-dev.txt        PyYAML, pinned
+.gitleaks.toml              secret-scan config for this vault (vault-owned, not updated by the engine)
+.githooks/                  pre-commit, pre-merge-commit, and the chain pass-through
+.github/workflows/check.yml CI
+.github/CODEOWNERS          code owners: every path except content (an allowlist)
+.obsidian/                  app, core-plugin and template settings; Sync is off
+scripts/                    all code: checks, init, install, retrieval, outline, engine update, tests
+templates/skills/           templates for the two agent skills
+skills/                     rendered skills, created by init (<name>-discover, <name>-maintain)
+raw/                        immutable source captures (created with the first capture)
+docs/plans/                 implementation plans
+wiki/                       maintained knowledge
+  index.md  log.md          the entry point and the append-only change log
+  system/                   how the vault works and how to write for it
+  templates/                page templates
+  runbooks/                 how-to pages, including retrieval, standards checks and seeding a new vault
+  capabilities/ journeys/ doctrine/ field-reports/
+.qmd/                       the search index for this vault (gitignored, created by make retrieval-setup)
+.venv/                      the Python virtual environment (gitignored, created by make setup; never commit it)
+```
 
 ## Which harnesses read the pointer
 
@@ -287,7 +332,7 @@ Retrieval gives agents keyword and semantic search over `wiki/` using QMD. The d
 6. Vale config is the one engine file something reads without being run: Vale editor plugins load `.vale.ini` and its styles as soon as they are on disk, before you review the diff. So the fetched Vale files must pass your vault's own allowlist before anything is copied (exit 2 otherwise). `.vale.ini` may set only `StylesPath = .vale/styles` and `MinAlertLevel` at the top, and per file glob only `BasedOnStyles`, `TokenIgnores`, `BlockIgnores`, and `<style>.<rule>` levels; no `Packages`, `[formats]`, or `Transform`. `<style>` is never Vale's built-in `Vale`. The file is split on newlines only, as Vale's own INI parser does, and only lines both parsers read the same way are accepted: flush-left `[section]` and `key = value` lines, comments, and blank lines; no indented lines, carriage returns or Unicode line separators, continuations, quoted multi-line values, duplicate keys, or `[DEFAULT]`. Under `.vale/` only rule files (`.vale/styles/<style>/<rule>.yml`, lowercase) are allowed, never a symlink, and a rule's `extends:` must be a built-in kind other than `script` and `spelling`. A Vale config name (`.vale.ini`, `_vale.ini`, `vale.ini`, `.vale`, `_vale`) anywhere but the root is refused. `make check` applies the same allowlist to the tree, including directories its other checks skip.
 7. It overwrites the listed files, printing `updated <path>` or `added <path>`, then prints `git status --short`, `git diff --stat`, and the full content of each added file (which `git diff` never shows), and exits 0. It runs nothing from the fetched ref, not even `make check`: you review the diff first, then run `make render-skills && make check` yourself. The hooks are links into `.githooks/`, so your next `git commit` or `git merge` runs the fetched hooks; review them before either.
 
-The manifest lists itself and the skill templates under `templates/`, so an update carries new engine files and template changes. It does not carry everything vault-kit ships: `.gitignore`, `AGENTS.md`, `README.md`, `LICENSE`, `.github/CODEOWNERS`, the `.obsidian/` settings, and the wiki contract pages (`wiki/system/`, `wiki/templates/`, the runbooks) are vault-owned or outside the engine locations, so a release that changes them needs a hand merge: compare them with the tag (`git diff <tag> -- <path>` after fetching it) and copy what you want. Because the CI workflow is in the manifest, local edits to it are replaced; review the diff before you commit.
+To run an update, see [Updating](#updating). The manifest lists itself and the skill templates under `templates/`, so an update carries new engine files and template changes. It does not carry everything vault-kit ships: `.gitignore`, `AGENTS.md`, `README.md`, `LICENSE`, `.github/CODEOWNERS`, the `.obsidian/` settings, and the wiki contract pages (`wiki/system/`, `wiki/templates/`, the runbooks) are vault-owned or outside the engine locations, so a release that changes them needs a hand merge: compare them with the tag (`git diff <tag> -- <path>` after fetching it) and copy what you want. Because the CI workflow is in the manifest, local edits to it are replaced; review the diff before you commit.
 
 ## Multi-project use and trust
 
@@ -298,43 +343,6 @@ The manifest lists itself and the skill templates under `templates/`, so an upda
 - Trust root. These paths are instructions or code for every agent that installs the vault: `AGENTS.md`, `CLAUDE.md`, `skills/`, `templates/`, `scripts/`, `Makefile`, `.githooks/`, `.github/`, `vault.toml`, `engine.manifest`, `requirements-dev.txt`, `.gitleaks.toml`, `.gitleaksignore`, and so is almost any new top-level path (`.claude/`, `.mcp.json`, `.obsidian/plugins/`, `.gitattributes`). So `.github/CODEOWNERS` is an allowlist: every path needs a code owner except the content a contributor edits (`wiki/`, `raw/`, the root `index.md`), and within those, `wiki/system/`, `wiki/templates/`, any dot-path and any agent instruction file (`AGENTS.md`, `CLAUDE.md` and the like) still need one. `docs/plans/` needs one too: agents carry out plan files, so a plan is instructions. It only has effect once `main` is protected and requires code-owner review, so do that where your plan allows it (see the GitHub Free note in Quickstart).
 - The deny list is itself sensitive. It names what you want hidden. Keep the repository private, and keep the patterns as general as you can. The check never prints them.
 - If a secret lands in the repository: rotate the credential first. Then clean up history. `raw/` and `wiki/log.md` cannot be rewritten under the hooks, so removing a value from them needs a deliberate history rewrite outside the hooks, agreed with whoever owns the repository. Treat any value that reached a pushed branch as exposed.
-
-## Day to day
-
-Agents and people follow the same loop, which `AGENTS.md` states in full.
-
-1. Work on a branch in a Git worktree, never directly on `main`.
-2. Read `wiki/index.md` and the relevant pages. Search with `scripts/qmd`.
-3. Make the change: add a new dated capture under `raw/` for new source material, update the affected wiki pages, and keep attribution and uncertainty.
-4. Append an entry to `wiki/log.md`, run `make indexes`, stage the files, and commit. The hook checks the staged snapshot.
-5. Open a pull request, then run `make refresh` after merging to update search.
-
-Commands:
-
-- `make check`: the vault check, the index check, and the secret scan.
-- `make refresh`: `make check`, then update and embed the search index.
-- `make test`: the test suites for the hooks, `install-discovery`, `engine-update`, `init-vault`, `scripts/tripwire` and `scripts/md-outline`, each on throwaway fixtures. `make test-retrieval` also exercises QMD and needs it installed; `VAULT_KIT_TEST_SEMANTIC=1` adds the embedding leg.
-- `make indexes`: regenerate the directory indexes.
-
-## Updating
-
-```bash
-make engine-update REF=v0.1.0 COMMIT=<the full commit id of v0.1.0 you reviewed>
-```
-
-Run it on a clean tree. Pass `COMMIT` so a tag moved after your review is refused. The update only copies files and prints `git status --short` and `git diff --stat`; it runs nothing from the fetched code. Review `git diff`, then run `make render-skills && make check`, then commit. The skill templates under `templates/` are engine files, so an update can change them, which is why `make render-skills` follows every update. Also run `make render-skills` after you edit a template yourself. The update writes only the engine locations listed under Engine update, never `vault.toml`, `.gitleaks.toml`, `AGENTS.md`, `wiki/`, `raw/`, `docs/`, `skills/` or `.obsidian/`; changes vault-kit makes outside them need a hand merge.
-
-## Teardown
-
-Run these from the vault's primary checkout.
-
-```bash
-scripts/install-discovery --uninstall
-make retrieval-teardown
-make uninstall-hooks
-```
-
-The first removes the skill links, the pointer block and what the install created. The second removes the search collection and `.qmd/`. The third removes the Git hook links. The shared model cache under `~/.cache/qmd/models` stays; delete it by hand if you want the space back.
 
 ## Sibling vault
 

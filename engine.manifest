@@ -9,6 +9,8 @@ scripts/check-retrieval.py
 scripts/check-staged.py
 scripts/check-vault.py
 scripts/gitleaks
+scripts/pinnedbin.py
+scripts/vale
 scripts/index-vault.py
 scripts/install-discovery
 scripts/install-hooks
@@ -38,3 +40,10 @@ scripts/test-retrieval.sh
 scripts/scan-secrets.py
 scripts/patternscan.py
 scripts/venv-python
+scripts/test-vale.sh
+scripts/prose
+scripts/test-prose.sh
+.vale.ini
+.vale/styles/vaultkit/filler.yml
+.vale/styles/vaultkit/sentence-length.yml
+.vale/styles/vaultkit/unproven.yml

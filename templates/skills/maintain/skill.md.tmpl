@@ -11,7 +11,7 @@ metadata:
 
 {{title}} is the shared vault covering {{scope}} that every harness reads. This skill is its writer; `{{name}}-discover` is the reader it writes for.
 
-Tool surface, stated so you can plan: Read, Write, and Edit inside a worktree of the vault; `make` (`indexes`, `check`, `test-hooks`, `refresh`); `git` on a feature branch in that worktree (a second checkout of the repo); `gh` to open the pull request. Nothing is pre-approved; every command runs under the session's normal permissions. The Makefile and `scripts/` are the vault's own code, so they run whatever the checkout at `${{{root_env}}}` contains.
+Tool surface, stated so you can plan: Read, Write, and Edit inside a worktree of the vault; `make` (`indexes`, `check`, `prose`, `test-hooks`, `refresh`); `git` on a feature branch in that worktree (a second checkout of the repo); `gh` to open the pull request. Nothing is pre-approved; every command runs under the session's normal permissions. The Makefile and `scripts/` are the vault's own code, so they run whatever the checkout at `${{{root_env}}}` contains.
 
 A source or `raw/` capture over 256 KB will not fit in one read, and QMD does not index `raw/`. Run `scripts/md-outline <file>` for its headings with line ranges and sizes (frontmatter skipped), then read one section at a time with an offset and a limit. A redaction pass still reads every section.
 
@@ -44,15 +44,17 @@ The operation name goes in the log heading (Step 5). `references/operation-check
 
 ## Step 2: place the document
 
-| what you have | where it goes | template |
-|---|---|---|
-| a component another project can consume | `wiki/capabilities/<name>.md` | `wiki/templates/capability.md` |
-| a user outcome crossing several components | `wiki/journeys/<name>.md` | `wiki/templates/journey.md` |
-| a repeatable procedure | `wiki/runbooks/<name>.md` | `wiki/templates/runbook.md` |
-| a cross-cutting lesson with evidence, harness-neutral | `wiki/doctrine/<topic>.md` | none; follow `wiki/system/knowledge-format.md` |
-| the vault's own rules or layout | `wiki/system/<name>.md` | none |
-| source bytes worth keeping verbatim | `raw/<YYYY-MM-DD>-<slug>/` | immutable once committed |
-| a field report several components or harnesses share | `wiki/field-reports/<YYYY-MM-DD>-<slug>.md` | `wiki/templates/field-report.md` |
+| what you have | the reader's question | where it goes | template |
+|---|---|---|---|
+| a component another project can consume | look something up | `wiki/capabilities/<name>.md` | `wiki/templates/capability.md` |
+| a user outcome crossing several components | understand why (how one outcome flows across parts; its steps live in runbooks) | `wiki/journeys/<name>.md` | `wiki/templates/journey.md` |
+| a repeatable procedure | do a task | `wiki/runbooks/<name>.md` | `wiki/templates/runbook.md` |
+| a cross-cutting lesson with evidence, harness-neutral | understand why | `wiki/doctrine/<topic>.md` | none; follow `wiki/system/knowledge-format.md` |
+| the vault's own rules or layout | look something up | `wiki/system/<name>.md` | none |
+| source bytes worth keeping verbatim | none (evidence, not a page) | `raw/<YYYY-MM-DD>-<slug>/` | immutable once committed |
+| a field report several components or harnesses share | understand why | `wiki/field-reports/<YYYY-MM-DD>-<slug>.md` | `wiki/templates/field-report.md` |
+
+The questions are the four of the Diátaxis documentation framework: learn by doing, do a task, look something up, understand why. Name the reader's question before you pick a row. A page that answers two questions becomes two linked pages. No page type answers learn by doing yet; write a runbook and say in its first line that it walks a newcomer through.
 
 **Not here:**
 
@@ -83,10 +85,12 @@ If your harness has a redaction skill, you may run it as well; it adds to this c
 ## Step 4: check
 
 ```sh
-make indexes && make check
+make indexes && make check && make prose FILES="<pages you wrote or edited>"
 ```
 
 `make indexes` regenerates every `index.md` (never hand-edit one). `make check` runs the validator, the index freshness check, the rendered-skill check, and the secret scan; fix every line it prints. `wiki/runbooks/standards-checks.md` explains each check and what it cannot see.
+
+`make prose` prints Vale warnings drawn from `wiki/system/writing.md`, one `path:line:col:rule:message` per line, then a count. They never block. Fix a warning in a page you changed unless the flagged wording is quoted or required; wrap a quoted passage in `<!-- vale off -->` and `<!-- vale on -->`. Leave alerts in pages you did not touch. A line starting `vale wrapper:` or `prose:` means the prose check itself could not run (Vale unavailable or unverified): report that line and continue. Any other failure in this step comes from `make indexes` or `make check`; fix it.
 
 ## Step 5: log, commit, PR
 

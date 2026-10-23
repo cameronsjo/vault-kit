@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Lint vault pages with the pinned Vale and the vaultkit style; advisory.
+
+    scripts/prose [file.md ...]      (make prose [FILES="a.md b.md"])
+
+With no files it lints every tracked or new Markdown page under wiki/ and docs/, plus
+README.md and AGENTS.md. Named files are filtered the same way: raw/ (immutable provider
+captures) and wiki/log.md (append-only) are never linted, and a named file that does not
+exist, or resolves outside the vault, is dropped with a note. Vale reads this vault's .vale.ini only (--config), never the
+user's global Vale config or styles (--no-global), so every machine gets the same result.
+
+Output: one `path:line:col:rule:message` record per alert, then `N alerts in M files`.
+
+Exit codes: 0 done, whatever warnings it printed; 1 an error-level alert (none ship in the
+vaultkit style); 2 Vale could not be verified (scripts/vale refused it as possible
+tampering) or Vale itself failed; Vale unavailable (offline, no build for this platform)
+prints a skip line and exits 0, or 2 when VAULT_KIT_REQUIRE_VALE=1 (CI).
+"""
+import vaultconf
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = vaultconf.ROOT
+DEFAULT_PATHSPECS = ("wiki/*.md", "docs/*.md", "README.md", "AGENTS.md")  # git's * crosses /
+NEVER_LINTED_DIRS = ("raw",)
+NEVER_LINTED_FILES = ("wiki/log.md",)
+VALE_UNAVAILABLE = 3  # scripts/vale's exit when no verified Vale can be obtained
+REQUIRE_ENV = "VAULT_KIT_REQUIRE_VALE"
+
+
+def default_files():
+    result = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
+                             *DEFAULT_PATHSPECS], cwd=ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"prose: git ls-files failed: {result.stderr.strip()}", file=sys.stderr)
+        raise SystemExit(2)
+    return sorted({name for name in result.stdout.split("\0") if name})
+
+
+def lintable(names):
+    """The names to lint, in order; never raw/ or wiki/log.md, and only files that exist."""
+    kept = []
+    for name in names:
+        rel = Path(os.path.relpath(Path(name).resolve(), ROOT.resolve()))
+        if rel.parts[:1] == ("..",):
+            print(f"prose: note: {name} resolves outside this vault; skipped", file=sys.stderr)
+            continue
+        folded = tuple(part.casefold() for part in rel.parts)
+        if folded[:1] in [(d,) for d in NEVER_LINTED_DIRS] or "/".join(folded) in NEVER_LINTED_FILES:
+            continue
+        if not (ROOT / rel).is_file():
+            print(f"prose: note: {name} is not a file; skipped", file=sys.stderr)
+            continue
+        kept.append(str(rel))
+    return list(dict.fromkeys(kept))
+
+
+def main(argv):
+    files = lintable(argv or default_files())
+    if not files:
+        print("0 alerts in 0 files")
+        return 0
+    command = [sys.executable, str(ROOT / "scripts" / "vale"), "--config", str(ROOT / ".vale.ini"), "--no-global",
+               "--output=line", "--no-wrap", "--", *files]
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    sys.stderr.write(result.stderr)  # the wrapper's download line, notices, and refusals
+    if result.returncode == VALE_UNAVAILABLE:
+        reason = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "no reason given"
+        print(f"prose: skipped, Vale is unavailable: {reason}", file=sys.stderr)
+        return 2 if os.environ.get(REQUIRE_ENV) == "1" else 0
+    records = [line for line in result.stdout.splitlines() if line.strip()]
+    sys.stdout.write("".join(f"{line}\n" for line in records))
+    # Vale exits 1 only for error-level alerts; exit 1 with none printed is a crash, not a result.
+    if result.returncode not in (0, 1) or (result.returncode == 1 and not records):
+        print(f"prose: Vale failed (exit {result.returncode}); nothing was checked", file=sys.stderr)
+        return 2
+    print(f"{len(records)} alerts in {len(files)} files")
+    return result.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
