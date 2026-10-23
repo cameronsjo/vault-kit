@@ -5,10 +5,15 @@
 
 Fetches the ref into a temporary clone, reads THAT ref's engine.manifest, and
 overwrites only the files it lists. Every listed path must sit in an engine
-location: scripts/, templates/skills/, .githooks/pre-commit,
-.githooks/pre-merge-commit, .githooks/chain-passthrough, .github/workflows/check.yml, Makefile,
-requirements-dev.txt or engine.manifest, compared case-insensitively. Anything
+location: scripts/, templates/skills/, .vale/styles/vaultkit/, .githooks/pre-commit,
+.githooks/pre-merge-commit, .githooks/chain-passthrough, .github/workflows/check.yml, .vale.ini,
+Makefile, requirements-dev.txt or engine.manifest, compared case-insensitively. Anything
 else (vault.toml, AGENTS.md, wiki/, .claude/, .mcp.json, .envrc, ...) is refused.
+
+Vale config is the one engine file something reads without being run: editor plugins load
+.vale.ini and its styles as soon as they are on disk. So the fetched .vale.ini and rule
+files must pass this vault's own allowlist (vaultconf.vale_errors) before anything is
+copied, and a Vale config name anywhere but the root .vale.ini is refused.
 
 --commit pins the full commit id the ref must resolve to; a tag or branch that has
 moved since you reviewed it is refused before anything is copied.
@@ -26,7 +31,10 @@ import sys
 sys.dont_write_bytecode = True
 import vaultconf  # toolchain preflight; must precede everything else
 import argparse
+import importlib.machinery
+import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,9 +42,9 @@ import tempfile
 ROOT = vaultconf.ROOT
 DEFAULT_SOURCE = "https://github.com/cameronsjo/vault-kit.git"
 # The only places an engine update may write. Directories cover every file below them.
-ENGINE_DIRS = ("scripts", "templates/skills")
+ENGINE_DIRS = ("scripts", "templates/skills", ".vale/styles/vaultkit")
 ENGINE_FILES = (".githooks/pre-commit", ".githooks/pre-merge-commit", ".githooks/chain-passthrough",
-                ".github/workflows/check.yml",
+                ".github/workflows/check.yml", ".vale.ini",
                 "Makefile", "requirements-dev.txt", "engine.manifest")
 # Vault-owned paths, named in the refusal so the message says why, not just "not allowed".
 PROTECTED_FILES = ("vault.toml", ".gitleaks.toml", ".gitleaksignore", "AGENTS.md", "CLAUDE.md")
@@ -103,6 +111,88 @@ def has_symlink_component(base, rel):
     return vaultconf.symlink_component(base, base / rel) is not None
 
 
+HIDDEN_NAMES = {"__pycache__", ".gitignore", ".gitattributes"}
+# Bytecode and native extension modules: Python imports them in place of the reviewed .py.
+UNREADABLE_SUFFIXES = {".pyc", ".pyo", ".so", ".pyd", ".dylib",
+                       *(suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES)}
+# Characters a reviewer cannot read: NUL (git shows "Binary files differ"), C0 and C1
+# terminal controls (ESC and CSI sequences, bare carriage returns redraw the review), bidi
+# overrides (reorder displayed code), and Unicode line separators. Tab and newline are fine.
+UNREVIEWABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029]")
+
+
+def unreviewable(data):
+    """True when data is not UTF-8 text a reviewer can read as displayed."""
+    try:
+        return bool(UNREVIEWABLE.search(data.decode("utf-8")))
+    except UnicodeDecodeError:
+        return True
+
+
+def hidden_by_name(rel):
+    """True for a path git status or git diff would not show the reviewer in full.
+
+    A planted unchecked-hash .pyc under scripts/__pycache__ loads in place of the reviewed
+    source, and .gitignore hides it; .gitignore and .gitattributes can hide or blank others.
+    """
+    folded_parts = {part.casefold() for part in rel.parts}
+    name = rel.name.casefold()
+    return bool(folded_parts & HIDDEN_NAMES) or any(name.endswith(s) for s in UNREADABLE_SUFFIXES)
+
+
+def ignored_paths(rels):
+    """The subset of rels this vault's git ignores, from one git check-ignore call."""
+    if not rels:
+        return set()
+    result = subprocess.run(["git", "check-ignore", "--no-index", "--stdin", "-z"], cwd=ROOT,
+                            input="".join(f"{rel}\0" for rel in rels).encode(), capture_output=True)
+    if result.returncode not in (0, 1):  # 1: none ignored; anything else is git failing
+        refuse(f"git check-ignore failed: {result.stderr.decode().strip()}")
+    return {Path(name) for name in result.stdout.decode().split("\0") if name}
+
+
+def materialize(repo, dest):
+    """Write HEAD's tree into dest from raw blobs, so no filter or attribute can run.
+
+    Modes come from the tree: 100755 is executable, 120000 a symlink (kept as one, so the
+    symlink checks in read_manifest still see it). Submodule entries carry no blob and are
+    skipped. A path with an empty, ".", "..", or ".git" component, or one that would be
+    written through a symlink, is refused.
+    """
+    listing = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"], cwd=repo,
+                             capture_output=True, check=True).stdout
+    entries = []
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        meta, raw_path = record.split(b"\t", 1)
+        mode, kind, obj = meta.decode().split(" ")
+        if kind == "blob":
+            entries.append((mode, obj, os.fsdecode(raw_path)))
+    batch = subprocess.run(["git", "cat-file", "--batch"], cwd=repo, capture_output=True, check=True,
+                           input="".join(f"{obj}\n" for _, obj, _ in entries).encode()).stdout
+    offset = 0
+    for mode, obj, path in entries:
+        header_end = batch.index(b"\n", offset)
+        size = int(batch[offset:header_end].split(b" ")[2])
+        data = batch[header_end + 1:header_end + 1 + size]
+        offset = header_end + 1 + size + 1  # each object ends with a newline
+        parts = PurePosixPath(path).parts
+        if (path.startswith("/") or not parts
+                or any(part in ("", ".", "..") or part.casefold() == ".git" for part in parts)):
+            refuse(f"the ref's tree has an unsafe path {path!r}; nothing was copied")
+        target = dest / Path(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if vaultconf.symlink_component(dest, target.parent) is not None:
+            refuse(f"the ref's tree writes {path!r} through a symlink; nothing was copied")
+        if mode == "120000":
+            target.symlink_to(os.fsdecode(data))
+        else:
+            target.write_bytes(data)
+            if mode == "100755":
+                os.chmod(target, 0o755)
+
+
 def read_manifest(clone):
     manifest = clone / "engine.manifest"
     if manifest.is_symlink() or not manifest.is_file():
@@ -125,7 +215,21 @@ def read_manifest(clone):
             refuse(f"{where}: {entry} is not a regular file in that ref")
         if has_symlink_component(ROOT, rel):
             refuse(f"{where}: {entry} has a symlink component in this vault")
+        if hidden_by_name(rel):
+            refuse(f"{where}: {entry} would be hidden from the review (bytecode, a native module, "
+                   "or a git ignore or attributes file)")
+        if unreviewable((clone / rel).read_bytes()):
+            refuse(f"{where}: {entry} is not plain UTF-8 text (binary, terminal control, bidi, or "
+                   "line separator characters) the review can read")
         paths.append(rel)
+    ignored = ignored_paths(paths)
+    if ignored:
+        refuse(f"would be hidden from the review: this vault's git ignores "
+               f"{', '.join(sorted(map(str, ignored)))}")
+    vale = vaultconf.vale_errors(clone, paths)
+    if vale:
+        refuse("the ref's Vale config is outside the allowlist; nothing was copied:\n  "
+               + "\n  ".join(vale))
     return paths
 
 
@@ -154,23 +258,28 @@ def main():
         raise SystemExit(2)
 
     with tempfile.TemporaryDirectory(prefix="vault-kit-engine-") as temp:
-        clone = Path(temp) / "src"
+        repo, clone = Path(temp) / "git", Path(temp) / "src"
+        # --no-checkout: a checkout runs any smudge or process filter the developer has
+        # configured (git-lfs, git-crypt, ...) wherever the ref's .gitattributes selects it,
+        # before anything is reviewed. The tree is written from raw blobs below instead.
+        # transfer.fsckObjects refuses malformed trees ("..", ".git" entries).
         fetched = subprocess.run(
-            ["git", "-c", "advice.detachedHead=false", "clone", "--quiet", "--depth", "1",
-             "--branch", args.ref, "--", url, str(clone)],
+            ["git", "-c", "transfer.fsckObjects=true", "clone", "--quiet", "--no-checkout",
+             "--depth", "1", "--branch", args.ref, "--", url, str(repo)],
             capture_output=True, text=True)
         if fetched.returncode != 0:
             print(f"engine-update: could not fetch ref {args.ref} from {args.source}:\n"
                   f"{fetched.stderr.strip()}", file=sys.stderr)
             raise SystemExit(3)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=clone, capture_output=True,
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
                               text=True, check=True).stdout.strip()
+        materialize(repo, clone)
         if args.commit is not None and head != args.commit:
             refuse(f"ref {args.ref} resolves to {head}, not --commit {args.commit}; "
                    "nothing was copied. Re-review the ref before updating.")
         print(f"engine-update: {args.ref} is commit {head}")
         paths = read_manifest(clone)  # validates every path before anything is copied
-        changed = 0
+        changed, added = 0, []
         for rel in paths:
             fetched_file, dest = clone / rel, ROOT / rel
             existed = dest.exists()
@@ -181,11 +290,18 @@ def main():
             shutil.copy2(fetched_file, dest)
             print(f"{'updated' if existed else 'added'} {rel}")
             changed += 1
+            if not existed:
+                added.append(rel)
     print(f"engine-update: {changed} of {len(paths)} engine files changed")
     subprocess.run(["git", "status", "--short"], cwd=ROOT)
     subprocess.run(["git", "diff", "--stat"], cwd=ROOT)
-    print("engine-update: nothing from that ref has run. Review the diff above (git diff), "
-          "then run `make render-skills && make check`, then commit.")
+    for rel in added:  # git diff never shows an untracked file's content
+        print(f"engine-update: new file {rel}:")
+        subprocess.run(["git", "--no-pager", "diff", "--no-index", "--no-color", "--", "/dev/null",
+                        str(rel)], cwd=ROOT)
+    print("engine-update: nothing from that ref has run yet. Review the diff above (git diff), "
+          "then run `make render-skills && make check`, then commit. The hooks are links into "
+          ".githooks/, so your next git commit or merge runs the fetched hooks: review them first.")
     raise SystemExit(0)
 
 

@@ -348,6 +348,173 @@ def checked_base(root, base):
     return base
 
 
+# Vale config is read by editor plugins (vale-ls and friends) the moment it lands on disk,
+# before anyone reviews an engine update, so its contents are allowlisted rather than trusted.
+# engine-update runs vale_errors on a fetched ref before copying; check-vault runs it on the tree.
+VALE_INI = ".vale.ini"
+# Names Vale loads as config when it walks up from a linted file. Only the root .vale.ini is allowed.
+VALE_CONFIG_NAMES = {".vale.ini", "_vale.ini", "vale.ini", ".vale", "_vale"}
+VALE_STYLES_PATH = ".vale/styles"
+VALE_ROOT_KEYS = {"stylespath", "minalertlevel"}
+VALE_UNCHECKED_KEYS = {"tokenignores", "blockignores"}  # regex values; a line can hold nothing else
+VALE_LEVELS = {"suggestion", "warning", "error"}
+VALE_RULE_SETTINGS = VALE_LEVELS | {"yes", "no"}
+VALE_BUILTIN_STYLE = "vale"  # Vale.Spelling and friends; never enabled from here
+# Every rule kind except `script` (Tengo code) and `spelling` (reads dictionaries from disk).
+VALE_RULE_KINDS = {"existence", "substitution", "occurrence", "repetition", "consistency",
+                   "conditional", "capitalization", "metric", "sequence"}
+VALE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+VALE_SECTION_RE = re.compile(r"\[([^\[\]]+)\]")
+VALE_LINE_BREAKS = re.compile("[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
+VALE_KEY_RE = re.compile(r"([A-Za-z0-9_.-]+)[ \t]*=[ \t]*(.*)")
+
+
+def vale_ini_lines(text):
+    """(section, key, value) for each setting, or a refusal.
+
+    Parsed line by line on purpose: Python's configparser and Vale's Go INI library disagree
+    (an indented line is a continuation to one and a new key or section to the other), so
+    only the subset both read the same way is accepted: flush-left `[section]` and
+    `key = value` lines, `#`/`;` comment lines, and blank lines. No continuations, no
+    multi-line or quoted-block values, no duplicate keys, no [DEFAULT].
+    """
+    settings, seen, section = [], set(), None
+    # Split on newline only, as go-ini does: str.splitlines() also splits on \r, U+2028 and
+    # friends, which would let one Go line hide a second value behind a "comment".
+    for number, line in enumerate(text.split("\n"), 1):
+        if VALE_LINE_BREAKS.search(line):
+            return None, f"line {number} holds a carriage return or Unicode line separator"
+        if not line.strip() or line[0] in "#;":
+            continue
+        if line[0].isspace():
+            return None, f"line {number} is indented; Vale and this check would read it differently"
+        if line.rstrip().endswith("\\"):
+            return None, f"line {number} ends in a line continuation"
+        heading = VALE_SECTION_RE.fullmatch(line.rstrip())
+        if heading:
+            section = heading.group(1).strip()
+            if section.casefold() == "default":
+                return None, f"line {number}: [{section}] is not allowed"
+            continue
+        setting = VALE_KEY_RE.fullmatch(line.rstrip())
+        if not setting:
+            return None, f"line {number} is not a [section] or key = value line"
+        key, value = setting.group(1).casefold(), setting.group(2).strip()
+        if value.startswith(('"""', "`")):
+            return None, f"line {number}: a quoted or multi-line value is not allowed"
+        if (section, key) in seen:
+            return None, f"line {number}: {key} is set twice"
+        seen.add((section, key))
+        settings.append((section, key, value))
+    return settings, None
+
+
+def vale_ini_errors(text):
+    """Why a .vale.ini falls outside the allowlist; empty when it is inside."""
+    settings, refusal = vale_ini_lines(text)
+    if refusal:
+        return [f"{VALE_INI}: {refusal}"]
+    errors = []
+    for section, key, value in settings:
+        if section is None:
+            if key not in VALE_ROOT_KEYS:
+                errors.append(f"{VALE_INI}: top-level key {key} is not allowed")
+            elif key == "stylespath" and value != VALE_STYLES_PATH:
+                errors.append(f"{VALE_INI}: StylesPath must be {VALE_STYLES_PATH}, got {value!r}")
+            elif key == "minalertlevel" and value.casefold() not in VALE_LEVELS:
+                errors.append(f"{VALE_INI}: MinAlertLevel {value!r} is not a level")
+        elif not section.startswith("*"):
+            errors.append(f"{VALE_INI}: section [{section}] is not a file glob")
+        elif key == "basedonstyles":
+            names = [name.strip() for name in value.split(",") if name.strip()]
+            bad = [name for name in names
+                   if not VALE_NAME_RE.fullmatch(name) or name.casefold() == VALE_BUILTIN_STYLE]
+            if bad:
+                errors.append(f"{VALE_INI}: [{section}] BasedOnStyles names a style outside "
+                              f"{VALE_STYLES_PATH}: {', '.join(bad)}")
+        elif key in VALE_UNCHECKED_KEYS:
+            continue
+        elif "." in key:
+            style, _, rule = key.partition(".")
+            if (style == VALE_BUILTIN_STYLE or not VALE_NAME_RE.fullmatch(style)
+                    or not VALE_NAME_RE.fullmatch(rule)):
+                errors.append(f"{VALE_INI}: [{section}] {key} is not a rule of a style in {VALE_STYLES_PATH}")
+            elif value.casefold() not in VALE_RULE_SETTINGS:
+                errors.append(f"{VALE_INI}: [{section}] {key} = {value!r} is not a level or YES/NO")
+        else:
+            errors.append(f"{VALE_INI}: [{section}] key {key} is not allowed")
+    return errors
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """safe_load that refuses a repeated mapping key, which PyYAML would silently resolve to
+    the last value (so `extends: script` then `extends: existence` would read as existence)."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}",
+                                                        key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def vale_rule_errors(rel, text):
+    """Why a Vale rule file falls outside the allowlist; empty when it is inside."""
+    try:
+        data = yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506  (a SafeLoader subclass)
+    except yaml.YAMLError as error:
+        if "duplicate key" in str(error):
+            return [f"{rel}: a key is set twice; Vale and this check would read it differently"]
+        return [f"{rel}: not valid YAML"]
+    if not isinstance(data, dict):
+        return [f"{rel}: a Vale rule must be a mapping"]
+    kind = data.get("extends")
+    if kind not in VALE_RULE_KINDS:
+        return [f"{rel}: extends {kind!r} is not an allowed rule kind "
+                f"({', '.join(sorted(VALE_RULE_KINDS))})"]
+    return []
+
+
+def vale_errors(base, rels):
+    """Allowlist errors for the Vale config among rels (paths relative to base).
+
+    Paths compare case-insensitively, because on a case-insensitive disk .Vale/Styles is
+    the directory Vale reads as .vale/styles.
+    """
+    errors = []
+    styles = tuple(part.casefold() for part in Path(VALE_STYLES_PATH).parts)
+    for rel in rels:
+        rel = Path(rel)
+        folded = tuple(part.casefold() for part in rel.parts)
+        is_config = rel.name.casefold() in VALE_CONFIG_NAMES
+        under_vale = folded[:1] == styles[:1]
+        if is_config and folded != (VALE_INI,):
+            errors.append(f"{rel}: Vale reads this name as config; only the root {VALE_INI} is allowed")
+            continue
+        if not (is_config or under_vale):
+            continue
+        if (base / rel).is_symlink():
+            errors.append(f"{rel}: a symlink in Vale config; Vale would load its target unchecked")
+            continue
+        is_rule = (len(rel.parts) == len(styles) + 2 and folded[:len(styles)] == styles
+                   and VALE_NAME_RE.fullmatch(rel.parts[-2]) and rel.suffix == ".yml"
+                   and VALE_NAME_RE.fullmatch(rel.stem))
+        if under_vale and not is_rule:
+            errors.append(f"{rel}: only rule files ({VALE_STYLES_PATH}/<style>/<rule>.yml, lowercase) "
+                          "are allowed under .vale/")
+            continue
+        try:
+            text = (base / rel).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"{rel}: not UTF-8 text")
+            continue
+        errors.extend(vale_ini_errors(text) if is_config else vale_rule_errors(rel, text))
+    return errors
+
+
 def check_initialized(root=None):
     """Return an error message when the vault is still a template, else None."""
     config = load(root)

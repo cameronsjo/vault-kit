@@ -231,6 +231,10 @@ def validate(root, deny=(), deny_source="vault.toml"):
                           f"{', '.join(sorted(d + '/' for d in SYMLINK_FREE))}; commit a regular "
                           "file or directory")
     errors.extend(redaction_errors(root, deny, deny_source))
+    # The same allowlist engine-update applies before copying, as the CI backstop. Every listed
+    # path, ignored ones included: Vale finds a config under .claude/ or .worktrees/ too.
+    errors.extend(vaultconf.vale_errors(root, [p.relative_to(root) for p in listed
+                                               if p.is_file() or p.is_symlink()]))
     docs = documents(root)
     if not docs:
         return ["No Markdown documents found"], 0
@@ -438,9 +442,59 @@ def self_test():
             assert any(f"example.md: frontmatter" in e and why in e for e in validate(root)[0]), \
                 f"malformed frontmatter accepted: {bad!r}"
         doc.write_text(good)
+        # Vale config: the allowlist engine-update applies before copying holds over the tree too.
+        ini, rule = root / ".vale.ini", root / ".vale" / "styles" / "vaultkit" / "filler.yml"
+        rule.parent.mkdir(parents=True)
+        rule_text = "extends: existence\nmessage: filler\nlevel: warning\ntokens: [basically]\n"
+        ini.write_text("StylesPath = .vale/styles\n\n[*.md]\nBasedOnStyles = vaultkit\n")
+        rule.write_text(rule_text)
+        assert not validate(root)[0], "allowed Vale config was rejected"
+        ini.write_text("Packages = Google\nStylesPath = .vale/styles\n")
+        assert any(".vale.ini: top-level key packages" in e for e in validate(root)[0]), \
+            "a .vale.ini with Packages was accepted"
+        ini.write_text("StylesPath = .vale/styles\n")
+        rule.write_text("extends: script\nmessage: x\nscript: x\n")
+        assert any("extends 'script'" in e for e in validate(root)[0]), "a script rule was accepted"
+        rule.write_text("extends: script\nextends: existence\nmessage: x\ntokens: [x]\n")
+        assert any("a key is set twice" in e for e in validate(root)[0]), "a duplicate extends key was accepted"
+        rule.write_text(rule_text)
+        nested = root / "scripts" / "vale.ini"
+        nested.parent.mkdir()
+        nested.write_text("StylesPath = /etc\n")
+        assert any("only the root .vale.ini" in e for e in validate(root)[0]), \
+            "a nested Vale config name was accepted"
+        nested.unlink()
+        # Under a directory the other checks skip: Vale still finds it there.
+        hidden_config = root / ".claude" / "vale.ini"
+        hidden_config.parent.mkdir()
+        hidden_config.write_text("StylesPath = /etc\n")
+        assert any(".claude/vale.ini: Vale reads this name" in e for e in validate(root)[0]), \
+            "a Vale config under .claude/ was accepted"
+        hidden_config.unlink()
+        ini.write_text("StylesPath = .vale/styles\n\n[*.md]\nTokenIgnores = x\n  [formats]\n  md = xml\n")
+        assert any("is indented" in e for e in validate(root)[0]), \
+            "an indented line that Vale reads as a new section was accepted"
+        ini.write_text("StylesPath = .vale/styles\u2028#/../../scripts\n\n[*.md]\nBasedOnStyles = vaultkit\n",
+                       encoding="utf-8")
+        assert any("Unicode line separator" in e for e in validate(root)[0]), \
+            "a value hidden behind a Unicode line separator was accepted"
+        ini.write_bytes("StylesPath = .vale/styles\n".encode("utf-16"))
+        assert any(".vale.ini: not UTF-8 text" in e for e in validate(root)[0]), "non-UTF-8 .vale.ini crashed or passed"
+        ini.unlink()
+        ini.symlink_to("docs.ini")
+        (root / "docs.ini").write_text("Packages = Google\n")
+        assert any("a symlink in Vale config" in e for e in validate(root)[0]), "a symlinked .vale.ini was accepted"
+        ini.unlink()
+        (root / "docs.ini").unlink()
+        shouting = rule.with_name("FILLER.YML")
+        rule.rename(shouting)
+        assert any("only rule files" in e for e in validate(root)[0]), \
+            "a rule file Vale would not load under that name was accepted"
+        shouting.rename(rule)
     print("Validator controls passed: unknown fields accepted; bad type, link, lifecycle, and filename rejected; "
           "skills/ exempt from metadata but not from name or credential checks; "
-          "deny patterns and credential URLs caught in any non-binary file.")
+          "deny patterns and credential URLs caught in any non-binary file; "
+          "Vale config held to its allowlist.")
 
 
 if __name__ == "__main__":
