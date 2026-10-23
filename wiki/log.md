@@ -63,3 +63,7 @@ Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0. `wiki/system/knowledge-
 ## [2026-10-22] maintenance | Field report: Vale prose checks rollout
 
 Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0. Added `wiki/field-reports/vale-prose-checks-rollout.md`, which records how `make prose` shipped in `v0.2.0` and `v0.3.0` and why the Vale config allowlist uses a strict newline-only parser. Evidence: cameronsjo/vault-kit#9 and #12 merged with CI passing; about 40 staged breaks went red; the first vault rollout passed `make check` and `make test` with byte-identical engine files. Gaps: cameronsjo/vault-kit#10, #11 and #13 stay open.
+
+## [2026-10-23] lint | Correct the Vale field report against its sources
+
+Actor: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0 (source review). `wiki/field-reports/vale-prose-checks-rollout.md`: the staged-break count is 36 (21 in #9, 15 in #12), not about 40 as the entry above says; the TL;DR names both bypasses (indented lines and Unicode line separators); the vault-kit alert count is dated; an unsourced distro default is generalized. Evidence: the PR #9 and #12 bodies and the plan's Deviations. Gaps: none.

@@ -2,11 +2,11 @@
 type: Plan
 title: 'Vale prose checks and a Diátaxis lens for vault-kit'
 description: 'Plan to lint vault pages and vault-kit docs with a pinned Vale, and to classify page types by Diátaxis question.'
-status: draft
+status: stable
 generated:
   by: claude-code/93d41cc1-e50e-4cf8-954d-27bd586ee6c0
   at: '2026-10-22T13:40:00-05:00'
-next: "Cameron merges artificermade/artificer-made#6 (v0.2.0) and PR B (#12) → tag v0.3.0 → Task 6 step 2"
+next: "none: done. v0.2.0 and v0.3.0 tagged and rolled out to the first vault"
 branch: feat/vale-prose
 pr: cameronsjo/vault-kit#12
 updated: 2026-10-22
@@ -234,7 +234,7 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 
 **Steps:**
 - [x] After `v0.2.0` exists: `scripts/engine-update --ref v0.2.0 --commit <its sha>` in a worktree; `make check`; PR (Cameron merges). This installs the engine-update that accepts `.vale*` and checks its contents
-- [ ] After `v0.3.0` exists and step 1's PR merged: `scripts/engine-update --ref v0.3.0 --commit <its sha>`; `make render-skills && make check && make prose`; record the alert count; PR (Cameron merges)
+- [x] After `v0.3.0` exists and step 1's PR merged: `scripts/engine-update --ref v0.3.0 --commit <its sha>`; `make render-skills && make check && make prose`; record the alert count; PR (Cameron merges)
 
 ## Deviations
 
@@ -249,6 +249,7 @@ CI ──► make prose on changed files; count to $GITHUB_STEP_SUMMARY
 
 - **2026-10-22 — PR B polish.** The code review found that CI on #12 was red (the offline prose test inherited the job's `VAULT_KIT_REQUIRE_VALE=1`) and that the new cache-ownership check refused directories the wrapper itself created under umask 002, which would have blocked every gitleaks run on Ubuntu or Fedora defaults. Fixed: missing cache levels are created 0700 whatever the umask, an owned but group-writable directory gets a `chmod go-w` fix instead of "report it", the cached binary file is checked too, and any crash in the wrapper exits 2 (never 1, which callers read as findings). `scripts/prose` passes the wrapper's stderr through (the download line and notices now reach the user), treats exit 1 with no alerts as a failure, and drops paths that resolve outside the vault. Interface deviations from Task 2 and Task 3 as written: one `Refusal(kind)` with `UNAVAILABLE`/`INTEGRITY` instead of two exception types; the archive member is `ToolSpec.name`, not a separate `member` field; `unavailable_exit` is an argument of `main()`, not a `ToolSpec` field; `closed_note` carries gitleaks' fail-closed sentence; `make prose` can exit 1 on an error-level alert (none ship); the CI step calls `scripts/prose` with a NUL-separated array instead of `make prose FILES=...`, so a page name cannot split. The maintain skill's failure sentence now keys on the `vale wrapper:`/`prose:` stderr prefix, because `make` exits 2 for any recipe failure. Declined: silencing the `not hash-verified` note for a right-version package-manager gitleaks (it is the planned N2 visibility; it prints on stderr only).
 - **2026-10-22 — PR B bounded security re-review.** 0 Critical, 0 Important, 3 Nits. Fixed: a failed `execv` exits 2 with "Nothing was run" (not covered by a test: the path is reachable only through a race, since `*_BIN` is probed before it runs); the CI step writes the `git diff` names to a file so a failing diff stops the step instead of reading as "no Markdown changed". Filed: cameronsjo/vault-kit#13 (a shared, non-sticky cache ancestor allows a swap between hash and exec; the fd-exec fix depends on the platform). The review loop stops here.
+- **2026-10-23 — Task 6 done.** `v0.2.0` tagged at `714654a` and `v0.3.0` at `95c3fb8`; the first vault took each in its own engine-update PR, with engine files byte-identical to the tag. `make prose` there after `v0.3.0`: 6 alerts in 26 files, all `sentence-length`.
 
 ## Learnings
 
